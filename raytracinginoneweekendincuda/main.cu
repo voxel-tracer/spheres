@@ -30,7 +30,7 @@ void check_cuda(cudaError_t result, char const *const func, const char *const fi
 // it was blowing up the stack, so we have to turn this into a
 // limited-depth loop instead.  Later code in the book limits to a max
 // depth of 50, so we adapt this a few chapters early on the GPU.
-__device__ vec3 color(const ray& r, hitable **world, curandState *local_rand_state) {
+__device__ vec3 color(const ray& r, hitable **world, curandStatePhilox4_32_10_t *local_rand_state) {
     ray cur_ray = r;
     vec3 cur_attenuation = vec3(1.0, 1.0, 1.0);
     for (int i = 0; i < 50; i++) {
@@ -62,7 +62,7 @@ __global__ void rand_init(curandState *rand_state) {
     }
 }
 
-__global__ void render_init(int max_x, int max_y, curandState *rand_state) {
+__global__ void render_init(int max_x, int max_y, curandStatePhilox4_32_10_t *rand_state) {
     int i = threadIdx.x + blockIdx.x * blockDim.x;
     int j = threadIdx.y + blockIdx.y * blockDim.y;
     if ((i >= max_x) || (j >= max_y)) return;
@@ -71,12 +71,12 @@ __global__ void render_init(int max_x, int max_y, curandState *rand_state) {
     curand_init(1984, pixel_index, 0, &rand_state[pixel_index]);
 }
 
-__global__ void render(vec3 *fb, int max_x, int max_y, int ns, camera **cam, hitable **world, curandState *rand_state) {
+__global__ void render(vec3 *fb, int max_x, int max_y, int ns, camera **cam, hitable **world, curandStatePhilox4_32_10_t *rand_state) {
     int i = threadIdx.x + blockIdx.x * blockDim.x;
     int j = threadIdx.y + blockIdx.y * blockDim.y;
     if ((i >= max_x) || (j >= max_y)) return;
     int pixel_index = j * max_x + i;
-    curandState local_rand_state = rand_state[pixel_index];
+    curandStatePhilox4_32_10_t local_rand_state = rand_state[pixel_index];
     vec3 col(0, 0, 0);
     for (int s = 0; s < ns; s++) {
         float u = float(i + curand_uniform(&local_rand_state)) / float(max_x);
@@ -179,8 +179,8 @@ int main() {
     checkCudaErrors(cudaMallocManaged((void **)&d_fb, fb_size));
 
     // allocate random state
-    curandState *d_rand_state;
-    checkCudaErrors(cudaMalloc((void **)&d_rand_state, num_pixels * sizeof(curandState)));
+    curandStatePhilox4_32_10_t *d_rand_state;
+    checkCudaErrors(cudaMalloc((void **)&d_rand_state, num_pixels * sizeof(curandStatePhilox4_32_10_t)));
     curandState *d_rand_state2;
     checkCudaErrors(cudaMalloc((void **)&d_rand_state2, 1 * sizeof(curandState)));
 
