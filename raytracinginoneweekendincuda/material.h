@@ -39,45 +39,37 @@ __device__ vec3 reflect(const vec3& v, const vec3& n) {
      return v - 2.0f*dot(v,n)*n;
 }
 
-class material  {
-    public:
-        __device__ virtual bool scatter(const ray& r_in, const hit_record& rec, vec3& attenuation, ray& scattered, rand_state *local_rand_state) const = 0;
+struct material {
+    enum Type { Lambertian, Metal, Dielectric };
+    Type type;
+    vec3 albedo;
+    float fuzz;
+    float ref_idx;
+
+    __device__ material() {}
+    __device__ material(Type _type, vec3 _albedo, float _fuzz, float _ref_idx) :type(_type), albedo(_albedo), fuzz(_fuzz), ref_idx(_ref_idx) {}
 };
 
-class lambertian : public material {
-    public:
-        __device__ lambertian(const vec3& a) : albedo(a) {}
-        __device__ virtual bool scatter(const ray& r_in, const hit_record& rec, vec3& attenuation, ray& scattered, rand_state *local_rand_state) const  {
-             vec3 target = rec.p + rec.normal + random_in_unit_sphere(local_rand_state);
-             scattered = ray(rec.p, target-rec.p);
-             attenuation = albedo;
-             return true;
-        }
+__device__ bool scatter(const material& mat, const ray& r_in, const hit_record& rec, vec3& attenuation, ray& scattered, rand_state *local_rand_state) {
+    switch (mat.type) {
+    case material::Lambertian:
+    {
+        vec3 target = rec.p + rec.normal + random_in_unit_sphere(local_rand_state);
+        scattered = ray(rec.p, target - rec.p);
+        attenuation = mat.albedo;
+        return true;
+    }
 
-        vec3 albedo;
-};
+    case material::Metal:
+    {
+        vec3 reflected = reflect(unit_vector(r_in.direction()), rec.normal);
+        scattered = ray(rec.p, reflected + mat.fuzz * random_in_unit_sphere(local_rand_state));
+        attenuation = mat.albedo;
+        return (dot(scattered.direction(), rec.normal) > 0.0f);
+    }
 
-class metal : public material {
-    public:
-        __device__ metal(const vec3& a, float f) : albedo(a) { if (f < 1) fuzz = f; else fuzz = 1; }
-        __device__ virtual bool scatter(const ray& r_in, const hit_record& rec, vec3& attenuation, ray& scattered, rand_state *local_rand_state) const  {
-            vec3 reflected = reflect(unit_vector(r_in.direction()), rec.normal);
-            scattered = ray(rec.p, reflected + fuzz*random_in_unit_sphere(local_rand_state));
-            attenuation = albedo;
-            return (dot(scattered.direction(), rec.normal) > 0.0f);
-        }
-        vec3 albedo;
-        float fuzz;
-};
-
-class dielectric : public material {
-public:
-    __device__ dielectric(float ri) : ref_idx(ri) {}
-    __device__ virtual bool scatter(const ray& r_in,
-                         const hit_record& rec,
-                         vec3& attenuation,
-                         ray& scattered,
-                         rand_state *local_rand_state) const  {
+    case material::Dielectric:
+    {
         vec3 outward_normal;
         vec3 reflected = reflect(r_in.direction(), rec.normal);
         float ni_over_nt;
@@ -87,17 +79,17 @@ public:
         float cosine;
         if (dot(r_in.direction(), rec.normal) > 0.0f) {
             outward_normal = -rec.normal;
-            ni_over_nt = ref_idx;
+            ni_over_nt = mat.ref_idx;
             cosine = dot(r_in.direction(), rec.normal) / r_in.direction().length();
-            cosine = sqrt(1.0f - ref_idx*ref_idx*(1-cosine*cosine));
+            cosine = sqrt(1.0f - mat.ref_idx * mat.ref_idx*(1 - cosine * cosine));
         }
         else {
             outward_normal = rec.normal;
-            ni_over_nt = 1.0f / ref_idx;
+            ni_over_nt = 1.0f / mat.ref_idx;
             cosine = -dot(r_in.direction(), rec.normal) / r_in.direction().length();
         }
         if (refract(r_in.direction(), outward_normal, ni_over_nt, refracted))
-            reflect_prob = schlick(cosine, ref_idx);
+            reflect_prob = schlick(cosine, mat.ref_idx);
         else
             reflect_prob = 1.0f;
         if (curand_uniform(local_rand_state) < reflect_prob)
@@ -107,6 +99,9 @@ public:
         return true;
     }
 
-    float ref_idx;
-};
+    default:
+        return false;
+    }
+}
+
 #endif

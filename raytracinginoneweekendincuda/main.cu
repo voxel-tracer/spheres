@@ -38,7 +38,7 @@ __device__ vec3 color(const ray& r, hitable **world, rand_state *local_rand_stat
         if ((*world)->hit(cur_ray, 0.001f, FLT_MAX, rec)) {
             ray scattered;
             vec3 attenuation;
-            if (rec.mat_ptr->scatter(cur_ray, rec, attenuation, scattered, local_rand_state)) {
+            if (scatter(*rec.mat_ptr, cur_ray, rec, attenuation, scattered, local_rand_state)) {
                 cur_attenuation *= attenuation;
                 cur_ray = scattered;
             }
@@ -94,34 +94,38 @@ __global__ void render(vec3 *fb, int max_x, int max_y, int ns, camera **cam, hit
 
 #define RND (curand_uniform(&local_rand_state))
 
-__global__ void create_world(hitable **d_list, hitable **d_world, camera **d_camera, int nx, int ny, rand_state *rnd_state) {
+__global__ void create_world(hitable **d_list, material **d_materials, hitable **d_world, camera **d_camera, int nx, int ny, rand_state *rnd_state) {
     if (threadIdx.x == 0 && blockIdx.x == 0) {
         rand_state local_rand_state = *rnd_state;
-        d_list[0] = new sphere(vec3(0, -1000.0, -1), 1000,
-            new lambertian(vec3(0.5, 0.5, 0.5)));
+        d_materials[0] = new material(material::Lambertian, vec3(0.5, 0.5, 0.5), 0, 0);
+        d_list[0] = new sphere(vec3(0, -1000.0, -1), 1000);
         int i = 1;
         for (int a = -11; a < 11; a++) {
             for (int b = -11; b < 11; b++) {
                 float choose_mat = RND;
                 vec3 center(a + RND, 0.2, b + RND);
                 if (choose_mat < 0.8f) {
-                    d_list[i++] = new sphere(center, 0.2,
-                        new lambertian(vec3(RND*RND, RND*RND, RND*RND)));
+                    d_materials[i] = new material(material::Lambertian, vec3(RND*RND, RND*RND, RND*RND), 0, 0);
+                    d_list[i++] = new sphere(center, 0.2);
                 }
                 else if (choose_mat < 0.95f) {
-                    d_list[i++] = new sphere(center, 0.2,
-                        new metal(vec3(0.5f*(1.0f + RND), 0.5f*(1.0f + RND), 0.5f*(1.0f + RND)), 0.5f*RND));
+                    d_materials[i] = new material(material::Metal, vec3(0.5f*(1.0f + RND), 0.5f*(1.0f + RND), 0.5f*(1.0f + RND)), 0.5f*RND, 0);
+                    d_list[i++] = new sphere(center, 0.2);
                 }
                 else {
-                    d_list[i++] = new sphere(center, 0.2, new dielectric(1.5));
+                    d_materials[i] = new material(material::Dielectric, vec3(), 0, 1.5);
+                    d_list[i++] = new sphere(center, 0.2);
                 }
             }
         }
-        d_list[i++] = new sphere(vec3(0, 1, 0), 1.0, new dielectric(1.5));
-        d_list[i++] = new sphere(vec3(-4, 1, 0), 1.0, new lambertian(vec3(0.4, 0.2, 0.1)));
-        d_list[i++] = new sphere(vec3(4, 1, 0), 1.0, new metal(vec3(0.7, 0.6, 0.5), 0.0));
+        d_materials[i] = new material(material::Dielectric, vec3(), 0, 1.5);
+        d_list[i++] = new sphere(vec3(0, 1, 0), 1.0);
+        d_materials[i] = new material(material::Lambertian, vec3(0.4, 0.2, 0.1), 0, 0);
+        d_list[i++] = new sphere(vec3(-4, 1, 0), 1.0);
+        d_materials[i] = new material(material::Metal, vec3(0.7, 0.6, 0.5), 0, 0);
+        d_list[i++] = new sphere(vec3(4, 1, 0), 1.0);
         *rnd_state = local_rand_state;
-        *d_world = new hitable_list(d_list, 22 * 22 + 1 + 3);
+        *d_world = new hitable_list(d_list, d_materials, 22 * 22 + 1 + 3);
 
         vec3 lookfrom(13, 2, 3);
         vec3 lookat(0, 0, 0);
@@ -137,9 +141,9 @@ __global__ void create_world(hitable **d_list, hitable **d_world, camera **d_cam
     }
 }
 
-__global__ void free_world(hitable **d_list, hitable **d_world, camera **d_camera) {
+__global__ void free_world(hitable **d_list, material **d_materials, hitable **d_world, camera **d_camera) {
     for (int i = 0; i < 22 * 22 + 1 + 3; i++) {
-        delete ((sphere *)d_list[i])->mat_ptr;
+        delete d_materials[i];
         delete d_list[i];
     }
     delete *d_world;
@@ -191,13 +195,15 @@ int main() {
 
     // make our world of hitables & the camera
     hitable **d_list;
+    material **d_materials;
     int num_hitables = 22 * 22 + 1 + 3;
     checkCudaErrors(cudaMalloc((void **)&d_list, num_hitables * sizeof(hitable *)));
+    checkCudaErrors(cudaMalloc((void **)&d_materials, num_hitables * sizeof(material *)));
     hitable **d_world;
     checkCudaErrors(cudaMalloc((void **)&d_world, sizeof(hitable *)));
     camera **d_camera;
     checkCudaErrors(cudaMalloc((void **)&d_camera, sizeof(camera *)));
-    create_world << <1, 1 >> >(d_list, d_world, d_camera, nx, ny, d_rand_state2);
+    create_world <<<1, 1 >>>(d_list, d_materials, d_world, d_camera, nx, ny, d_rand_state2);
     checkCudaErrors(cudaGetLastError());
     checkCudaErrors(cudaDeviceSynchronize());
 
@@ -225,11 +231,12 @@ int main() {
 
     // clean up
     checkCudaErrors(cudaDeviceSynchronize());
-    free_world << <1, 1 >> >(d_list, d_world, d_camera);
+    free_world <<<1, 1 >>>(d_list, d_materials, d_world, d_camera);
     checkCudaErrors(cudaGetLastError());
     checkCudaErrors(cudaFree(d_camera));
     checkCudaErrors(cudaFree(d_world));
     checkCudaErrors(cudaFree(d_list));
+    checkCudaErrors(cudaFree(d_materials));
     checkCudaErrors(cudaFree(d_rand_state));
     checkCudaErrors(cudaFree(d_fb));
 
