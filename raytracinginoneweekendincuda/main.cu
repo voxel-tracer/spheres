@@ -30,7 +30,7 @@ void check_cuda(cudaError_t result, char const *const func, const char *const fi
 // it was blowing up the stack, so we have to turn this into a
 // limited-depth loop instead.  Later code in the book limits to a max
 // depth of 50, so we adapt this a few chapters early on the GPU.
-__device__ vec3 color(const ray& r, hitable **world, curandStatePhilox4_32_10_t *local_rand_state) {
+__device__ vec3 color(const ray& r, hitable **world, rand_state *local_rand_state) {
     ray cur_ray = r;
     vec3 cur_attenuation = vec3(1.0, 1.0, 1.0);
     for (int i = 0; i < 50; i++) {
@@ -56,13 +56,13 @@ __device__ vec3 color(const ray& r, hitable **world, curandStatePhilox4_32_10_t 
     return vec3(0.0, 0.0, 0.0); // exceeded recursion
 }
 
-__global__ void rand_init(curandState *rand_state) {
+__global__ void rand_init(rand_state *rand_state) {
     if (threadIdx.x == 0 && blockIdx.x == 0) {
         curand_init(1984, 0, 0, rand_state);
     }
 }
 
-__global__ void render_init(int max_x, int max_y, curandStatePhilox4_32_10_t *rand_state) {
+__global__ void render_init(int max_x, int max_y, rand_state *rand_state) {
     int i = threadIdx.x + blockIdx.x * blockDim.x;
     int j = threadIdx.y + blockIdx.y * blockDim.y;
     if ((i >= max_x) || (j >= max_y)) return;
@@ -71,12 +71,12 @@ __global__ void render_init(int max_x, int max_y, curandStatePhilox4_32_10_t *ra
     curand_init(1984, pixel_index, 0, &rand_state[pixel_index]);
 }
 
-__global__ void render(vec3 *fb, int max_x, int max_y, int ns, camera **cam, hitable **world, curandStatePhilox4_32_10_t *rand_state) {
+__global__ void render(vec3 *fb, int max_x, int max_y, int ns, camera **cam, hitable **world, rand_state *rnd_state) {
     int i = threadIdx.x + blockIdx.x * blockDim.x;
     int j = threadIdx.y + blockIdx.y * blockDim.y;
     if ((i >= max_x) || (j >= max_y)) return;
     int pixel_index = j * max_x + i;
-    curandStatePhilox4_32_10_t local_rand_state = rand_state[pixel_index];
+    rand_state local_rand_state = rnd_state[pixel_index];
     vec3 col(0, 0, 0);
     for (int s = 0; s < ns; s++) {
         float u = float(i + curand_uniform(&local_rand_state)) / float(max_x);
@@ -84,7 +84,7 @@ __global__ void render(vec3 *fb, int max_x, int max_y, int ns, camera **cam, hit
         ray r = (*cam)->get_ray(u, v, &local_rand_state);
         col += color(r, world, &local_rand_state);
     }
-    rand_state[pixel_index] = local_rand_state;
+    rnd_state[pixel_index] = local_rand_state;
     col /= float(ns);
     col[0] = sqrt(col[0]);
     col[1] = sqrt(col[1]);
@@ -94,9 +94,9 @@ __global__ void render(vec3 *fb, int max_x, int max_y, int ns, camera **cam, hit
 
 #define RND (curand_uniform(&local_rand_state))
 
-__global__ void create_world(hitable **d_list, hitable **d_world, camera **d_camera, int nx, int ny, curandState *rand_state) {
+__global__ void create_world(hitable **d_list, hitable **d_world, camera **d_camera, int nx, int ny, rand_state *rnd_state) {
     if (threadIdx.x == 0 && blockIdx.x == 0) {
-        curandState local_rand_state = *rand_state;
+        rand_state local_rand_state = *rnd_state;
         d_list[0] = new sphere(vec3(0, -1000.0, -1), 1000,
             new lambertian(vec3(0.5, 0.5, 0.5)));
         int i = 1;
@@ -120,7 +120,7 @@ __global__ void create_world(hitable **d_list, hitable **d_world, camera **d_cam
         d_list[i++] = new sphere(vec3(0, 1, 0), 1.0, new dielectric(1.5));
         d_list[i++] = new sphere(vec3(-4, 1, 0), 1.0, new lambertian(vec3(0.4, 0.2, 0.1)));
         d_list[i++] = new sphere(vec3(4, 1, 0), 1.0, new metal(vec3(0.7, 0.6, 0.5), 0.0));
-        *rand_state = local_rand_state;
+        *rnd_state = local_rand_state;
         *d_world = new hitable_list(d_list, 22 * 22 + 1 + 3);
 
         vec3 lookfrom(13, 2, 3);
@@ -179,10 +179,10 @@ int main() {
     checkCudaErrors(cudaMalloc((void **)&d_fb, fb_size));
 
     // allocate random state
-    curandStatePhilox4_32_10_t *d_rand_state;
-    checkCudaErrors(cudaMalloc((void **)&d_rand_state, num_pixels * sizeof(curandStatePhilox4_32_10_t)));
-    curandState *d_rand_state2;
-    checkCudaErrors(cudaMalloc((void **)&d_rand_state2, 1 * sizeof(curandState)));
+    rand_state *d_rand_state;
+    checkCudaErrors(cudaMalloc((void **)&d_rand_state, num_pixels * sizeof(rand_state)));
+    rand_state *d_rand_state2;
+    checkCudaErrors(cudaMalloc((void **)&d_rand_state2, 1 * sizeof(rand_state)));
 
     // we need that 2nd random state to be initialized for the world creation
     rand_init << <1, 1 >> >(d_rand_state2);

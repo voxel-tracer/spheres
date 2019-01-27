@@ -6,7 +6,7 @@
 
 #define kPI 3.1415926f
 
-__device__ vec3 random_in_unit_disk(curandStatePhilox4_32_10_t *local_rand_state) {
+__device__ vec3 random_in_unit_disk(rand_state *local_rand_state) {
     vec3 p;
     do {
         p = 2.0f*vec3(curand_uniform(local_rand_state),curand_uniform(local_rand_state),0) - vec3(1,1,0);
@@ -29,7 +29,7 @@ public:
         horizontal = 2.0f*half_width*focus_dist*u;
         vertical = 2.0f*half_height*focus_dist*v;
     }
-    __device__ ray get_ray(float s, float t, curandStatePhilox4_32_10_t *local_rand_state) {
+    __device__ ray get_ray(float s, float t, rand_state *local_rand_state) {
         vec3 rd = lens_radius*random_in_unit_disk(local_rand_state);
         vec3 offset = u * rd.x() + v * rd.y();
         return ray(origin + offset, lower_left_corner + s*horizontal + t*vertical - origin - offset);
