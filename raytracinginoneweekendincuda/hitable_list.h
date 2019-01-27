@@ -1,28 +1,27 @@
 #ifndef HITABLELISTH
 #define HITABLELISTH
 
-#include "hitable.h"
+#include "sphere.h"
 
-class hitable_list: public hitable  {
-    public:
+struct hitable_list {
         __device__ hitable_list() {}
-        __device__ hitable_list(hitable **l, material **m, int n) { list = l; materials = m;  list_size = n; }
-        __device__ virtual bool hit(const ray& r, float tmin, float tmax, hit_record& rec) const;
-        hitable **list;
+        __device__ hitable_list(sphere **s, material **m, int n) { spheres = s; materials = m;  num_spheres = n; }
+
+        sphere **spheres;
         material **materials;
-        int list_size;
+        int num_spheres;
 };
 
-__device__ bool hitable_list::hit(const ray& r, float t_min, float t_max, hit_record& rec) const {
+__device__ bool hit_hitable_list(const hitable_list* list, const ray& r, float t_min, float t_max, hit_record& rec) {
         hit_record temp_rec;
         bool hit_anything = false;
         float closest_so_far = t_max;
-        for (int i = 0; i < list_size; i++) {
-            if (list[i]->hit(r, t_min, closest_so_far, temp_rec)) {
+        for (int i = 0; i < list->num_spheres; i++) {
+            if (hit_sphere(list->spheres[i], r, t_min, closest_so_far, temp_rec)) {
                 hit_anything = true;
                 closest_so_far = temp_rec.t;
                 rec = temp_rec;
-                rec.mat_ptr = materials[i];
+                rec.mat_ptr = list->materials[i];
             }
         }
         return hit_anything;
