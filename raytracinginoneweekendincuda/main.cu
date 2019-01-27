@@ -176,7 +176,7 @@ int main() {
 
     // allocate FB
     vec3 *d_fb;
-    checkCudaErrors(cudaMallocManaged((void **)&d_fb, fb_size));
+    checkCudaErrors(cudaMalloc((void **)&d_fb, fb_size));
 
     // allocate random state
     curandStatePhilox4_32_10_t *d_rand_state;
