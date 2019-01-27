@@ -77,6 +77,8 @@
     <CudaCompile>
       <TargetMachinePlatform>64</TargetMachinePlatform>
       <CodeGeneration>compute_50,sm_50</CodeGeneration>
+      <InterleaveSourceInPTX>false</InterleaveSourceInPTX>
+      <GenerateLineInfo>true</GenerateLineInfo>
     </CudaCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
