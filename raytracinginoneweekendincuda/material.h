@@ -46,8 +46,8 @@ struct material {
     float fuzz;
     float ref_idx;
 
-    __device__ material() {}
-    __device__ material(Type _type, vec3 _albedo, float _fuzz, float _ref_idx) :type(_type), albedo(_albedo), fuzz(_fuzz), ref_idx(_ref_idx) {}
+    material() {}
+    material(Type _type, vec3 _albedo, float _fuzz, float _ref_idx) :type(_type), albedo(_albedo), fuzz(_fuzz), ref_idx(_ref_idx) {}
 };
 
 __device__ bool scatter(const material& mat, const ray& r_in, const hit_record& rec, vec3& attenuation, ray& scattered, rand_state *local_rand_state) {

@@ -10,12 +10,12 @@ struct hit_record
     float t;
     vec3 p;
     vec3 normal;
-    material *mat_ptr;
+    int hit_idx;
 };
 
 struct sphere  {
-        __device__ sphere() {}
-        __device__ sphere(vec3 cen, float r) : center(cen), radius(r) {};
+        sphere() {}
+        sphere(vec3 cen, float r) : center(cen), radius(r) {};
 
         vec3 center;
         float radius;

@@ -33,12 +33,13 @@ void check_cuda(cudaError_t result, char const *const func, const char *const fi
 __device__ vec3 color(const ray& r, hitable_list **world, rand_state *local_rand_state) {
     ray cur_ray = r;
     vec3 cur_attenuation = vec3(1.0, 1.0, 1.0);
+    const material* materials = (*world)->materials;
     for (int i = 0; i < 50; i++) {
         hit_record rec;
         if (hit_hitable_list(*world, cur_ray, 0.001f, FLT_MAX, rec)) {
             ray scattered;
             vec3 attenuation;
-            if (scatter(*rec.mat_ptr, cur_ray, rec, attenuation, scattered, local_rand_state)) {
+            if (scatter(materials[rec.hit_idx], cur_ray, rec, attenuation, scattered, local_rand_state)) {
                 cur_attenuation *= attenuation;
                 cur_ray = scattered;
             }
@@ -92,40 +93,55 @@ __global__ void render(vec3 *fb, int max_x, int max_y, int ns, camera **cam, hit
     fb[pixel_index] = col;
 }
 
-#define RND (curand_uniform(&local_rand_state))
+float random_float(unsigned int &state) {
+    state = (214013 * state + 2531011);
+    return (float)((state >> 16) & 0x7FFF) / 32767;
+}
 
-__global__ void create_world(sphere **d_spheres, material **d_materials, hitable_list **d_world, camera **d_camera, int nx, int ny, rand_state *rnd_state) {
-    if (threadIdx.x == 0 && blockIdx.x == 0) {
-        rand_state local_rand_state = *rnd_state;
-        d_materials[0] = new material(material::Lambertian, vec3(0.5, 0.5, 0.5), 0, 0);
-        d_spheres[0] = new sphere(vec3(0, -1000.0, -1), 1000);
-        int i = 1;
-        for (int a = -11; a < 11; a++) {
-            for (int b = -11; b < 11; b++) {
-                float choose_mat = RND;
-                vec3 center(a + RND, 0.2, b + RND);
-                if (choose_mat < 0.8f) {
-                    d_materials[i] = new material(material::Lambertian, vec3(RND*RND, RND*RND, RND*RND), 0, 0);
-                    d_spheres[i++] = new sphere(center, 0.2);
-                }
-                else if (choose_mat < 0.95f) {
-                    d_materials[i] = new material(material::Metal, vec3(0.5f*(1.0f + RND), 0.5f*(1.0f + RND), 0.5f*(1.0f + RND)), 0.5f*RND, 0);
-                    d_spheres[i++] = new sphere(center, 0.2);
-                }
-                else {
-                    d_materials[i] = new material(material::Dielectric, vec3(), 0, 1.5);
-                    d_spheres[i++] = new sphere(center, 0.2);
-                }
+#define RND (random_float(rand_state))
+
+void setup_scene(sphere **h_spheres, material **h_materials, int &num_spheres) {
+    num_spheres = 22 * 22 + 1 + 3;
+    sphere* spheres = new sphere[num_spheres];
+    material* materials = new material[num_spheres];
+
+    unsigned int rand_state = 0;
+
+    materials[0] = material(material::Lambertian, vec3(0.5, 0.5, 0.5), 0, 0);
+    spheres[0] = sphere(vec3(0, -1000.0, -1), 1000);
+    int i = 1;
+    for (int a = -11; a < 11; a++) {
+        for (int b = -11; b < 11; b++) {
+            float choose_mat = RND;
+            vec3 center(a + RND, 0.2, b + RND);
+            if (choose_mat < 0.8f) {
+                materials[i] = material(material::Lambertian, vec3(RND*RND, RND*RND, RND*RND), 0, 0);
+                spheres[i++] = sphere(center, 0.2);
+            }
+            else if (choose_mat < 0.95f) {
+                materials[i] = material(material::Metal, vec3(0.5f*(1.0f + RND), 0.5f*(1.0f + RND), 0.5f*(1.0f + RND)), 0.5f*RND, 0);
+                spheres[i++] = sphere(center, 0.2);
+            }
+            else {
+                materials[i] = material(material::Dielectric, vec3(), 0, 1.5);
+                spheres[i++] = sphere(center, 0.2);
             }
         }
-        d_materials[i] = new material(material::Dielectric, vec3(), 0, 1.5);
-        d_spheres[i++] = new sphere(vec3(0, 1, 0), 1.0);
-        d_materials[i] = new material(material::Lambertian, vec3(0.4, 0.2, 0.1), 0, 0);
-        d_spheres[i++] = new sphere(vec3(-4, 1, 0), 1.0);
-        d_materials[i] = new material(material::Metal, vec3(0.7, 0.6, 0.5), 0, 0);
-        d_spheres[i++] = new sphere(vec3(4, 1, 0), 1.0);
-        *rnd_state = local_rand_state;
-        *d_world = new hitable_list(d_spheres, d_materials, 22 * 22 + 1 + 3);
+    }
+    materials[i] = material(material::Dielectric, vec3(), 0, 1.5);
+    spheres[i++] = sphere(vec3(0, 1, 0), 1.0);
+    materials[i] = material(material::Lambertian, vec3(0.4, 0.2, 0.1), 0, 0);
+    spheres[i++] = sphere(vec3(-4, 1, 0), 1.0);
+    materials[i] = material(material::Metal, vec3(0.7, 0.6, 0.5), 0, 0);
+    spheres[i++] = sphere(vec3(4, 1, 0), 1.0);
+
+    *h_spheres = spheres;
+    *h_materials = materials;
+}
+
+__global__ void create_world(sphere *d_spheres, material *d_materials, int num_spheres, hitable_list **d_world, camera **d_camera, int nx, int ny) {
+    if (threadIdx.x == 0 && blockIdx.x == 0) {
+        *d_world = new hitable_list(d_spheres, d_materials, num_spheres);
 
         vec3 lookfrom(13, 2, 3);
         vec3 lookat(0, 0, 0);
@@ -141,11 +157,7 @@ __global__ void create_world(sphere **d_spheres, material **d_materials, hitable
     }
 }
 
-__global__ void free_world(sphere **d_spheres, material **d_materials, hitable_list **d_world, camera **d_camera) {
-    for (int i = 0; i < 22 * 22 + 1 + 3; i++) {
-        delete d_materials[i];
-        delete d_spheres[i];
-    }
+__global__ void free_world(hitable_list **d_world, camera **d_camera) {
     delete *d_world;
     delete *d_camera;
 }
@@ -185,25 +197,29 @@ int main() {
     // allocate random state
     rand_state *d_rand_state;
     checkCudaErrors(cudaMalloc((void **)&d_rand_state, num_pixels * sizeof(rand_state)));
-    rand_state *d_rand_state2;
-    checkCudaErrors(cudaMalloc((void **)&d_rand_state2, 1 * sizeof(rand_state)));
 
-    // we need that 2nd random state to be initialized for the world creation
-    rand_init << <1, 1 >> >(d_rand_state2);
-    checkCudaErrors(cudaGetLastError());
-    checkCudaErrors(cudaDeviceSynchronize());
+    // first init the scene on the host
+    sphere *h_spheres;
+    material *h_materials;
+    int num_hitables;
+    setup_scene(&h_spheres, &h_materials, num_hitables);
+    // copy the scene to device
+    sphere *d_spheres;
+    material *d_materials;
+    checkCudaErrors(cudaMalloc((void **)&d_spheres, num_hitables * sizeof(sphere)));
+    checkCudaErrors(cudaMalloc((void **)&d_materials, num_hitables * sizeof(material)));
+    checkCudaErrors(cudaMemcpy(d_spheres, h_spheres, num_hitables * sizeof(sphere), cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(d_materials, h_materials, num_hitables * sizeof(material), cudaMemcpyHostToDevice));
+    // free host scene
+    delete[] h_spheres;
+    delete[] h_materials;
 
     // make our world of hitables & the camera
-    sphere **d_spheres;
-    material **d_materials;
-    int num_hitables = 22 * 22 + 1 + 3;
-    checkCudaErrors(cudaMalloc((void **)&d_spheres, num_hitables * sizeof(sphere *)));
-    checkCudaErrors(cudaMalloc((void **)&d_materials, num_hitables * sizeof(material *)));
     hitable_list **d_world;
     checkCudaErrors(cudaMalloc((void **)&d_world, sizeof(hitable_list *)));
     camera **d_camera;
     checkCudaErrors(cudaMalloc((void **)&d_camera, sizeof(camera *)));
-    create_world <<<1, 1 >>>(d_spheres, d_materials, d_world, d_camera, nx, ny, d_rand_state2);
+    create_world <<<1, 1 >>>(d_spheres, d_materials, num_hitables, d_world, d_camera, nx, ny);
     checkCudaErrors(cudaGetLastError());
     checkCudaErrors(cudaDeviceSynchronize());
 
@@ -231,7 +247,7 @@ int main() {
 
     // clean up
     checkCudaErrors(cudaDeviceSynchronize());
-    free_world <<<1, 1 >>>(d_spheres, d_materials, d_world, d_camera);
+    free_world <<<1, 1 >>>(d_world, d_camera);
     checkCudaErrors(cudaGetLastError());
     checkCudaErrors(cudaFree(d_camera));
     checkCudaErrors(cudaFree(d_world));
