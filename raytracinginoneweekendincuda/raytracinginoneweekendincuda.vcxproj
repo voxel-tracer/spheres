@@ -79,6 +79,7 @@
       <CodeGeneration>compute_50,sm_50</CodeGeneration>
       <InterleaveSourceInPTX>false</InterleaveSourceInPTX>
       <GenerateLineInfo>true</GenerateLineInfo>
+      <PtxAsOptionV>true</PtxAsOptionV>
     </CudaCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
