@@ -65,7 +65,7 @@ __global__ void render_init(int max_x, int max_y, rand_state *rand_state) {
     curand_init(1984, pixel_index, 0, &rand_state[pixel_index]);
 }
 
-__global__ void render(vec3 *fb, int max_x, int max_y, int ns, camera **cam, const hitable_list world, rand_state *rnd_state) {
+__global__ void render(vec3 *fb, int max_x, int max_y, int ns, const camera cam, const hitable_list world, rand_state *rnd_state) {
     int i = threadIdx.x + blockIdx.x * blockDim.x;
     int j = threadIdx.y + blockIdx.y * blockDim.y;
     if ((i >= max_x) || (j >= max_y)) return;
@@ -75,7 +75,7 @@ __global__ void render(vec3 *fb, int max_x, int max_y, int ns, camera **cam, con
     for (int s = 0; s < ns; s++) {
         float u = float(i + curand_uniform(&local_rand_state)) / float(max_x);
         float v = float(j + curand_uniform(&local_rand_state)) / float(max_y);
-        ray r = (*cam)->get_ray(u, v, &local_rand_state);
+        ray r = cam.get_ray(u, v, &local_rand_state);
         col += color(r, world, &local_rand_state);
     }
     rnd_state[pixel_index] = local_rand_state;
@@ -132,24 +132,18 @@ void setup_scene(sphere **h_spheres, material **h_materials, int &num_spheres) {
     *h_materials = materials;
 }
 
-__global__ void create_world(camera **d_camera, int nx, int ny) {
-    if (threadIdx.x == 0 && blockIdx.x == 0) {
-        vec3 lookfrom(13, 2, 3);
-        vec3 lookat(0, 0, 0);
-        float dist_to_focus = 10.0; (lookfrom - lookat).length();
-        float aperture = 0.1;
-        *d_camera = new camera(lookfrom,
-            lookat,
-            vec3(0, 1, 0),
-            30.0,
-            float(nx) / float(ny),
-            aperture,
-            dist_to_focus);
-    }
-}
-
-__global__ void free_world(camera **d_camera) {
-    delete *d_camera;
+camera setup_camera(int nx, int ny) {
+    vec3 lookfrom(13, 2, 3);
+    vec3 lookat(0, 0, 0);
+    float dist_to_focus = 10.0; (lookfrom - lookat).length();
+    float aperture = 0.1;
+    return camera(lookfrom,
+        lookat,
+        vec3(0, 1, 0),
+        30.0,
+        float(nx) / float(ny),
+        aperture,
+        dist_to_focus);
 }
 
 void write_image(const char* output_file, const vec3 *fb, const int nx, const int ny) {
@@ -170,7 +164,7 @@ void write_image(const char* output_file, const vec3 *fb, const int nx, const in
 int main() {
     int nx = 1200;
     int ny = 800;
-    int ns = 10;
+    int ns = 100;
     int tx = 8;
     int ty = 8;
 
@@ -205,13 +199,7 @@ int main() {
     delete[] h_materials;
 
     hitable_list world(d_spheres, d_materials, num_hitables);
-
-    // make the camera
-    camera **d_camera;
-    checkCudaErrors(cudaMalloc((void **)&d_camera, sizeof(camera *)));
-    create_world <<<1, 1 >>>(d_camera, nx, ny);
-    checkCudaErrors(cudaGetLastError());
-    checkCudaErrors(cudaDeviceSynchronize());
+    camera cam = setup_camera(nx, ny);
 
     clock_t start, stop;
     start = clock();
@@ -221,7 +209,7 @@ int main() {
     render_init << <blocks, threads >> >(nx, ny, d_rand_state);
     checkCudaErrors(cudaGetLastError());
     checkCudaErrors(cudaDeviceSynchronize());
-    render << <blocks, threads >> >(d_fb, nx, ny, ns, d_camera, world, d_rand_state);
+    render << <blocks, threads >> >(d_fb, nx, ny, ns, cam, world, d_rand_state);
     checkCudaErrors(cudaGetLastError());
     checkCudaErrors(cudaDeviceSynchronize());
     stop = clock();
@@ -237,9 +225,7 @@ int main() {
 
     // clean up
     checkCudaErrors(cudaDeviceSynchronize());
-    free_world <<<1, 1 >>>(d_camera);
     checkCudaErrors(cudaGetLastError());
-    checkCudaErrors(cudaFree(d_camera));
     checkCudaErrors(cudaFree(d_spheres));
     checkCudaErrors(cudaFree(d_materials));
     checkCudaErrors(cudaFree(d_rand_state));
