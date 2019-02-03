@@ -50,11 +50,12 @@ struct material {
     material(Type _type, vec3 _albedo, float _fuzz, float _ref_idx) :type(_type), albedo(_albedo), fuzz(_fuzz), ref_idx(_ref_idx) {}
 };
 
-__device__ bool scatter(const material& mat, const ray& r_in, const hit_record& rec, vec3& attenuation, ray& scattered, rand_state *local_rand_state) {
+__device__ bool scatter(const sphere& s, const material& mat, const ray& r_in, const hit_record& rec, vec3& attenuation, ray& scattered, rand_state *local_rand_state) {
     switch (mat.type) {
     case material::Lambertian:
     {
-        vec3 target = rec.p + rec.normal + random_in_unit_sphere(local_rand_state);
+        const vec3 normal = s.normal(rec.p);
+        vec3 target = rec.p + normal + random_in_unit_sphere(local_rand_state);
         scattered = ray(rec.p, target - rec.p);
         attenuation = mat.albedo;
         return true;
@@ -62,31 +63,33 @@ __device__ bool scatter(const material& mat, const ray& r_in, const hit_record& 
 
     case material::Metal:
     {
-        vec3 reflected = reflect(unit_vector(r_in.direction()), rec.normal);
+        const vec3 normal = s.normal(rec.p);
+        vec3 reflected = reflect(unit_vector(r_in.direction()), normal);
         scattered = ray(rec.p, reflected + mat.fuzz * random_in_unit_sphere(local_rand_state));
         attenuation = mat.albedo;
-        return (dot(scattered.direction(), rec.normal) > 0.0f);
+        return (dot(scattered.direction(), normal) > 0.0f);
     }
 
     case material::Dielectric:
     {
+        const vec3 normal = s.normal(rec.p);
         vec3 outward_normal;
-        vec3 reflected = reflect(r_in.direction(), rec.normal);
+        vec3 reflected = reflect(r_in.direction(), normal);
         float ni_over_nt;
         attenuation = vec3(1.0, 1.0, 1.0);
         vec3 refracted;
         float reflect_prob;
         float cosine;
-        if (dot(r_in.direction(), rec.normal) > 0.0f) {
-            outward_normal = -rec.normal;
+        if (dot(r_in.direction(), normal) > 0.0f) {
+            outward_normal = -normal;
             ni_over_nt = mat.ref_idx;
-            cosine = dot(r_in.direction(), rec.normal) / r_in.direction().length();
+            cosine = dot(r_in.direction(), normal) / r_in.direction().length();
             cosine = sqrt(1.0f - mat.ref_idx * mat.ref_idx*(1 - cosine * cosine));
         }
         else {
-            outward_normal = rec.normal;
+            outward_normal = normal;
             ni_over_nt = 1.0f / mat.ref_idx;
-            cosine = -dot(r_in.direction(), rec.normal) / r_in.direction().length();
+            cosine = -dot(r_in.direction(), normal) / r_in.direction().length();
         }
         if (refract(r_in.direction(), outward_normal, ni_over_nt, refracted))
             reflect_prob = schlick(cosine, mat.ref_idx);

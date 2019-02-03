@@ -9,13 +9,14 @@ struct hit_record
 {
     float t;
     vec3 p;
-    vec3 normal;
     int hit_idx;
 };
 
 struct sphere  {
         sphere() {}
         sphere(vec3 cen, float r) : center(cen), radius(r) {};
+
+        __device__ vec3 normal(const vec3& p) const { return (p - center) / radius; }
 
         vec3 center;
         float radius;
@@ -34,14 +35,12 @@ __device__ bool hit_sphere(const sphere* s, const ray& r, float t_min, float t_m
         if (temp < t_max && temp > t_min) {
             rec.t = temp;
             rec.p = r.point_at_parameter(rec.t);
-            rec.normal = (rec.p - center) / radius;
             return true;
         }
         temp = (-b + sqrt(discriminant)) / a;
         if (temp < t_max && temp > t_min) {
             rec.t = temp;
             rec.p = r.point_at_parameter(rec.t);
-            rec.normal = (rec.p - center) / radius;
             return true;
         }
     }

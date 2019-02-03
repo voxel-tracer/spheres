@@ -38,7 +38,7 @@ __device__ vec3 color(const ray& r, const hitable_list& world, rand_state *local
         if (hit_hitable_list(world, cur_ray, 0.001f, FLT_MAX, rec)) {
             ray scattered;
             vec3 attenuation;
-            if (scatter(world.materials[rec.hit_idx], cur_ray, rec, attenuation, scattered, local_rand_state)) {
+            if (scatter(world.spheres[rec.hit_idx], world.materials[rec.hit_idx], cur_ray, rec, attenuation, scattered, local_rand_state)) {
                 cur_attenuation *= attenuation;
                 cur_ray = scattered;
             }
