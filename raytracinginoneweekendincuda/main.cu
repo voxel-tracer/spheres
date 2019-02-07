@@ -5,7 +5,6 @@
 #include "vec3.h"
 #include "ray.h"
 #include "sphere.h"
-#include "hitable_list.h"
 #include "camera.h"
 #include "material.h"
 
@@ -18,7 +17,7 @@
 
 void check_cuda(cudaError_t result, char const *const func, const char *const file, int const line) {
     if (result) {
-        std::cerr << "CUDA error = " << static_cast<unsigned int>(result) << " at " <<
+        std::cerr << "CUDA error = " << cudaGetErrorString(result) << " at " <<
             file << ":" << line << " '" << func << "' \n";
         // Make sure we call CUDA Device Reset before exiting
         cudaDeviceReset();
@@ -26,19 +25,24 @@ void check_cuda(cudaError_t result, char const *const func, const char *const fi
     }
 }
 
+const int kSphereCount = 22 * 22 + 1 + 3;
+
+__device__ __constant__ sphere d_spheres[kSphereCount];
+__device__ __constant__ material d_materials[kSphereCount];
+
 // Matching the C++ code would recurse enough into color() calls that
 // it was blowing up the stack, so we have to turn this into a
 // limited-depth loop instead.  Later code in the book limits to a max
 // depth of 50, so we adapt this a few chapters early on the GPU.
-__device__ vec3 color(const ray& r, const hitable_list& world, rand_state *local_rand_state) {
+__device__ vec3 color(const ray& r, rand_state *local_rand_state) {
     ray cur_ray = r;
     vec3 cur_attenuation = vec3(1.0, 1.0, 1.0);
     for (int i = 0; i < 50; i++) {
         hit_record rec;
-        if (hit_hitable_list(world, cur_ray, 0.001f, FLT_MAX, rec)) {
+        if (hit_spheres(d_spheres, kSphereCount, cur_ray, 0.001f, FLT_MAX, rec)) {
             ray scattered;
             vec3 attenuation;
-            if (scatter(world.spheres[rec.hit_idx], world.materials[rec.hit_idx], cur_ray, rec, attenuation, scattered, local_rand_state)) {
+            if (scatter(d_spheres[rec.hit_idx], d_materials[rec.hit_idx], cur_ray, rec, attenuation, scattered, local_rand_state)) {
                 cur_attenuation *= attenuation;
                 cur_ray = scattered;
             }
@@ -65,7 +69,7 @@ __global__ void render_init(int max_x, int max_y, rand_state *rand_state) {
     curand_init(1984, pixel_index, 0, &rand_state[pixel_index]);
 }
 
-__global__ void render(vec3 *fb, int max_x, int max_y, int ns, const camera cam, const hitable_list world, rand_state *rnd_state) {
+__global__ void render(vec3 *fb, int max_x, int max_y, int ns, const camera cam, rand_state *rnd_state) {
     int i = threadIdx.x + blockIdx.x * blockDim.x;
     int j = threadIdx.y + blockIdx.y * blockDim.y;
     if ((i >= max_x) || (j >= max_y)) return;
@@ -76,7 +80,7 @@ __global__ void render(vec3 *fb, int max_x, int max_y, int ns, const camera cam,
         float u = float(i + curand_uniform(&local_rand_state)) / float(max_x);
         float v = float(j + curand_uniform(&local_rand_state)) / float(max_y);
         ray r = cam.get_ray(u, v, &local_rand_state);
-        col += color(r, world, &local_rand_state);
+        col += color(r, &local_rand_state);
     }
     rnd_state[pixel_index] = local_rand_state;
     col /= float(ns);
@@ -93,10 +97,9 @@ float random_float(unsigned int &state) {
 
 #define RND (random_float(rand_state))
 
-void setup_scene(sphere **h_spheres, material **h_materials, int &num_spheres) {
-    num_spheres = 22 * 22 + 1 + 3;
-    sphere* spheres = new sphere[num_spheres];
-    material* materials = new material[num_spheres];
+void setup_scene(sphere **h_spheres, material **h_materials) {
+    sphere* spheres = new sphere[kSphereCount];
+    material* materials = new material[kSphereCount];
 
     unsigned int rand_state = 0;
 
@@ -182,23 +185,15 @@ int main() {
     rand_state *d_rand_state;
     checkCudaErrors(cudaMalloc((void **)&d_rand_state, num_pixels * sizeof(rand_state)));
 
-    // first init the scene on the host
-    sphere *h_spheres;
-    material *h_materials;
-    int num_hitables;
-    setup_scene(&h_spheres, &h_materials, num_hitables);
-    // copy the scene to device
-    sphere *d_spheres;
-    material *d_materials;
-    checkCudaErrors(cudaMalloc((void **)&d_spheres, num_hitables * sizeof(sphere)));
-    checkCudaErrors(cudaMalloc((void **)&d_materials, num_hitables * sizeof(material)));
-    checkCudaErrors(cudaMemcpy(d_spheres, h_spheres, num_hitables * sizeof(sphere), cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(d_materials, h_materials, num_hitables * sizeof(material), cudaMemcpyHostToDevice));
-    // free host scene
-    delete[] h_spheres;
-    delete[] h_materials;
+    // setup scene
+    sphere* h_spheres;
+    material* h_materials;
+    setup_scene(&h_spheres, &h_materials);
 
-    hitable_list world(d_spheres, d_materials, num_hitables);
+    // copy the scene to constant memory
+    checkCudaErrors(cudaMemcpyToSymbol(d_spheres, h_spheres, kSphereCount * sizeof(sphere)));
+    checkCudaErrors(cudaMemcpyToSymbol(d_materials, h_materials, kSphereCount * sizeof(material)));
+
     camera cam = setup_camera(nx, ny);
 
     clock_t start, stop;
@@ -209,7 +204,7 @@ int main() {
     render_init << <blocks, threads >> >(nx, ny, d_rand_state);
     checkCudaErrors(cudaGetLastError());
     checkCudaErrors(cudaDeviceSynchronize());
-    render << <blocks, threads >> >(d_fb, nx, ny, ns, cam, world, d_rand_state);
+    render << <blocks, threads >> >(d_fb, nx, ny, ns, cam, d_rand_state);
     checkCudaErrors(cudaGetLastError());
     checkCudaErrors(cudaDeviceSynchronize());
     stop = clock();
@@ -226,8 +221,6 @@ int main() {
     // clean up
     checkCudaErrors(cudaDeviceSynchronize());
     checkCudaErrors(cudaGetLastError());
-    checkCudaErrors(cudaFree(d_spheres));
-    checkCudaErrors(cudaFree(d_materials));
     checkCudaErrors(cudaFree(d_rand_state));
     checkCudaErrors(cudaFree(d_fb));
 
