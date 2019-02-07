@@ -28,11 +28,14 @@ __device__ bool refract(const vec3& v, const vec3& n, float ni_over_nt, vec3& re
 #define RANDVEC3 vec3(curand_uniform(local_rand_state),curand_uniform(local_rand_state),curand_uniform(local_rand_state))
 
 __device__ vec3 random_in_unit_sphere(rand_state *local_rand_state) {
-    vec3 p;
-    do {
-        p = 2.0f*RANDVEC3 - vec3(1,1,1);
-    } while (p.squared_length() >= 1.0f);
-    return p;
+    float z = curand_uniform(local_rand_state) * 2.0f - 1.0f;
+    float t = curand_uniform(local_rand_state) * 2.0f * kPI;
+    float r = sqrtf(fmaxf(0.0, 1.0f - z * z));
+    float x = r * cosf(t);
+    float y = r * sinf(t);
+    vec3 res = vec3(x, y, z);
+    res *= cbrtf(curand_uniform(local_rand_state));
+    return res;
 }
 
 __device__ vec3 reflect(const vec3& v, const vec3& n) {

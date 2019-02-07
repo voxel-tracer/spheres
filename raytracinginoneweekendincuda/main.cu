@@ -167,7 +167,7 @@ void write_image(const char* output_file, const vec3 *fb, const int nx, const in
 int main() {
     int nx = 1200;
     int ny = 800;
-    int ns = 100;
+    int ns = 1;
     int tx = 8;
     int ty = 8;
 
