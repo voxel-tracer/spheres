@@ -5,8 +5,6 @@
 #include <stdlib.h>
 #include <iostream>
 
-typedef curandStatePhilox4_32_10_t rand_state;
-
 class vec3  {
 
 

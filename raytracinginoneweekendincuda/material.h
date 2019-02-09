@@ -25,16 +25,16 @@ __device__ bool refract(const vec3& v, const vec3& n, float ni_over_nt, vec3& re
         return false;
 }
 
-#define RANDVEC3 vec3(curand_uniform(local_rand_state),curand_uniform(local_rand_state),curand_uniform(local_rand_state))
+#define RANDVEC3 vec3(random_float(local_rand_state),random_float(local_rand_state),random_float(local_rand_state))
 
-__device__ vec3 random_in_unit_sphere(rand_state *local_rand_state) {
-    float z = curand_uniform(local_rand_state) * 2.0f - 1.0f;
-    float t = curand_uniform(local_rand_state) * 2.0f * kPI;
+__device__ vec3 random_in_unit_sphere(rand_state& state) {
+    float z = random_float(state) * 2.0f - 1.0f;
+    float t = random_float(state) * 2.0f * kPI;
     float r = sqrtf(fmaxf(0.0, 1.0f - z * z));
     float x = r * cosf(t);
     float y = r * sinf(t);
     vec3 res = vec3(x, y, z);
-    res *= cbrtf(curand_uniform(local_rand_state));
+    res *= cbrtf(random_float(state));
     return res;
 }
 
@@ -53,7 +53,7 @@ struct material {
     material(Type _type, vec3 _albedo, float _fuzz, float _ref_idx) :type(_type), albedo(_albedo), fuzz(_fuzz), ref_idx(_ref_idx) {}
 };
 
-__device__ bool scatter(const sphere& s, const material& mat, const ray& r_in, const hit_record& rec, vec3& attenuation, ray& scattered, rand_state *local_rand_state) {
+__device__ bool scatter(const sphere& s, const material& mat, const ray& r_in, const hit_record& rec, vec3& attenuation, ray& scattered, rand_state& local_rand_state) {
     switch (mat.type) {
     case material::Lambertian:
     {
@@ -98,7 +98,7 @@ __device__ bool scatter(const sphere& s, const material& mat, const ray& r_in, c
             reflect_prob = schlick(cosine, mat.ref_idx);
         else
             reflect_prob = 1.0f;
-        if (curand_uniform(local_rand_state) < reflect_prob)
+        if (random_float(local_rand_state) < reflect_prob)
             scattered = ray(rec.p, reflected);
         else
             scattered = ray(rec.p, refracted);

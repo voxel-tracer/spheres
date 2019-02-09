@@ -34,7 +34,7 @@ __device__ __constant__ material d_materials[kSphereCount];
 // it was blowing up the stack, so we have to turn this into a
 // limited-depth loop instead.  Later code in the book limits to a max
 // depth of 50, so we adapt this a few chapters early on the GPU.
-__device__ vec3 color(const ray& r, rand_state *local_rand_state) {
+__device__ vec3 color(const ray& r, rand_state& rand_state) {
     ray cur_ray = r;
     vec3 cur_attenuation = vec3(1.0, 1.0, 1.0);
     for (int i = 0; i < 50; i++) {
@@ -42,7 +42,7 @@ __device__ vec3 color(const ray& r, rand_state *local_rand_state) {
         if (hit_spheres(d_spheres, kSphereCount, cur_ray, 0.001f, FLT_MAX, rec)) {
             ray scattered;
             vec3 attenuation;
-            if (scatter(d_spheres[rec.hit_idx], d_materials[rec.hit_idx], cur_ray, rec, attenuation, scattered, local_rand_state)) {
+            if (scatter(d_spheres[rec.hit_idx], d_materials[rec.hit_idx], cur_ray, rec, attenuation, scattered, rand_state)) {
                 cur_attenuation *= attenuation;
                 cur_ray = scattered;
             }
@@ -60,29 +60,19 @@ __device__ vec3 color(const ray& r, rand_state *local_rand_state) {
     return vec3(0.0, 0.0, 0.0); // exceeded recursion
 }
 
-__global__ void render_init(int max_x, int max_y, rand_state *rand_state) {
+__global__ void render(vec3 *fb, int max_x, int max_y, int ns, const camera cam) {
     int i = threadIdx.x + blockIdx.x * blockDim.x;
     int j = threadIdx.y + blockIdx.y * blockDim.y;
     if ((i >= max_x) || (j >= max_y)) return;
     int pixel_index = j * max_x + i;
-    //Each thread gets same seed, a different sequence number, no offset
-    curand_init(1984, pixel_index, 0, &rand_state[pixel_index]);
-}
-
-__global__ void render(vec3 *fb, int max_x, int max_y, int ns, const camera cam, rand_state *rnd_state) {
-    int i = threadIdx.x + blockIdx.x * blockDim.x;
-    int j = threadIdx.y + blockIdx.y * blockDim.y;
-    if ((i >= max_x) || (j >= max_y)) return;
-    int pixel_index = j * max_x + i;
-    rand_state local_rand_state = rnd_state[pixel_index];
+    rand_state state = (wang_hash(pixel_index) * 336343633) | 1;
     vec3 col(0, 0, 0);
     for (int s = 0; s < ns; s++) {
-        float u = float(i + curand_uniform(&local_rand_state)) / float(max_x);
-        float v = float(j + curand_uniform(&local_rand_state)) / float(max_y);
-        ray r = cam.get_ray(u, v, &local_rand_state);
-        col += color(r, &local_rand_state);
+        float u = float(i + random_float(state)) / float(max_x);
+        float v = float(j + random_float(state)) / float(max_y);
+        ray r = cam.get_ray(u, v, state);
+        col += color(r, state);
     }
-    rnd_state[pixel_index] = local_rand_state;
     col /= float(ns);
     col[0] = sqrt(col[0]);
     col[1] = sqrt(col[1]);
@@ -90,12 +80,12 @@ __global__ void render(vec3 *fb, int max_x, int max_y, int ns, const camera cam,
     fb[pixel_index] = col;
 }
 
-float random_float(unsigned int &state) {
+float rand(unsigned int &state) {
     state = (214013 * state + 2531011);
     return (float)((state >> 16) & 0x7FFF) / 32767;
 }
 
-#define RND (random_float(rand_state))
+#define RND (rand(rand_state))
 
 void setup_scene(sphere **h_spheres, material **h_materials) {
     sphere* spheres = new sphere[kSphereCount];
@@ -181,10 +171,6 @@ int main() {
     vec3 *d_fb;
     checkCudaErrors(cudaMalloc((void **)&d_fb, fb_size));
 
-    // allocate random state
-    rand_state *d_rand_state;
-    checkCudaErrors(cudaMalloc((void **)&d_rand_state, num_pixels * sizeof(rand_state)));
-
     // setup scene
     sphere* h_spheres;
     material* h_materials;
@@ -201,10 +187,7 @@ int main() {
     // Render our buffer
     dim3 blocks(nx / tx + 1, ny / ty + 1);
     dim3 threads(tx, ty);
-    render_init << <blocks, threads >> >(nx, ny, d_rand_state);
-    checkCudaErrors(cudaGetLastError());
-    checkCudaErrors(cudaDeviceSynchronize());
-    render << <blocks, threads >> >(d_fb, nx, ny, ns, cam, d_rand_state);
+    render << <blocks, threads >> >(d_fb, nx, ny, ns, cam);
     checkCudaErrors(cudaGetLastError());
     checkCudaErrors(cudaDeviceSynchronize());
     stop = clock();
@@ -221,7 +204,6 @@ int main() {
     // clean up
     checkCudaErrors(cudaDeviceSynchronize());
     checkCudaErrors(cudaGetLastError());
-    checkCudaErrors(cudaFree(d_rand_state));
     checkCudaErrors(cudaFree(d_fb));
 
     cudaDeviceReset();

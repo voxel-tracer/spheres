@@ -6,12 +6,6 @@
 
 #define kPI 3.1415926f
 
-__device__ vec3 random_in_unit_disk(rand_state *local_rand_state) {
-    const float a = curand_uniform(local_rand_state)*2.0f*kPI;
-    const float u = sqrtf(curand_uniform(local_rand_state));
-    return vec3(u*cosf(a), u*sinf(a), 0);
-}
-
 class camera {
 public:
     camera(vec3 lookfrom, vec3 lookat, vec3 vup, float vfov, float aspect, float aperture, float focus_dist) { // vfov is top to bottom in degrees
@@ -27,7 +21,7 @@ public:
         horizontal = 2.0f*half_width*focus_dist*u;
         vertical = 2.0f*half_height*focus_dist*v;
     }
-    __device__ ray get_ray(float s, float t, rand_state *local_rand_state) const {
+    __device__ ray get_ray(float s, float t, rand_state& local_rand_state) const {
         vec3 rd = lens_radius*random_in_unit_disk(local_rand_state);
         vec3 offset = u * rd.x() + v * rd.y();
         return ray(origin + offset, lower_left_corner + s*horizontal + t*vertical - origin - offset);
