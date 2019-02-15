@@ -154,13 +154,17 @@ void write_image(const char* output_file, const vec3 *fb, const int nx, const in
     delete[] data;
 }
 
-int main() {
+int main(int argc, char** argv) {
     int nx = 1200;
     int ny = 800;
-    int ns = 1;
+    int ns = 10;
     int tx = 8;
     int ty = 8;
 
+    if (argc > 1) {
+        ns = strtol(argv[1], NULL, 10);
+    }
+    
     std::cerr << "Rendering a " << nx << "x" << ny << " image with " << ns << " samples per pixel ";
     std::cerr << "in " << tx << "x" << ty << " blocks.\n";
 
