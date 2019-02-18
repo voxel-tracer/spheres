@@ -139,7 +139,8 @@ __host__ __device__ inline vec3& vec3::operator/=(const float t) {
 }
 
 __host__ __device__ inline vec3 unit_vector(vec3 v) {
-    return v / v.length();
+    float invLen = rsqrtf(dot(v, v));
+    return v * invLen;
 }
 
 #endif
