@@ -14,28 +14,14 @@ __device__ float schlick(float cosine, float ref_idx) {
 }
 
 __device__ bool refract(const vec3& v, const vec3& n, float ni_over_nt, vec3& refracted) {
-    vec3 uv = unit_vector(v);
-    float dt = dot(uv, n);
-    float discriminant = 1.0f - ni_over_nt*ni_over_nt*(1-dt*dt);
+    float dt = dot(v, n);
+    float discriminant = 1.0f - ni_over_nt * ni_over_nt*(1 - dt * dt);
     if (discriminant > 0) {
-        refracted = ni_over_nt*(uv - n*dt) - n*sqrt(discriminant);
+        refracted = ni_over_nt * (v - n * dt) - n * sqrt(discriminant);
         return true;
     }
     else
         return false;
-}
-
-#define RANDVEC3 vec3(random_float(local_rand_state),random_float(local_rand_state),random_float(local_rand_state))
-
-__device__ vec3 random_in_unit_sphere(rand_state& state) {
-    float z = random_float(state) * 2.0f - 1.0f;
-    float t = random_float(state) * 2.0f * kPI;
-    float r = sqrtf(fmaxf(0.0, 1.0f - z * z));
-    float x = r * cosf(t);
-    float y = r * sinf(t);
-    vec3 res = vec3(x, y, z);
-    res *= cbrtf(random_float(state));
-    return res;
 }
 
 __device__ vec3 reflect(const vec3& v, const vec3& n) {
@@ -53,24 +39,28 @@ struct material {
     material(Type _type, vec3 _albedo, float _fuzz, float _ref_idx) :type(_type), albedo(_albedo), fuzz(_fuzz), ref_idx(_ref_idx) {}
 };
 
-__device__ bool scatter(const sphere& s, const material& mat, const ray& r_in, const hit_record& rec, vec3& attenuation, ray& scattered, rand_state& local_rand_state) {
+__device__ bool scatter(const sphere& s, const material& mat, ray& r_in, vec3& attenuation, const hit_record& rec, rand_state& local_rand_state) {
     switch (mat.type) {
     case material::Lambertian:
     {
         const vec3 normal = s.normal(rec.p);
         vec3 target = rec.p + normal + random_in_unit_sphere(local_rand_state);
-        scattered = ray(rec.p, target - rec.p);
-        attenuation = mat.albedo;
+        r_in = ray(rec.p, target - rec.p);
+        attenuation *= mat.albedo;
         return true;
     }
 
     case material::Metal:
     {
         const vec3 normal = s.normal(rec.p);
-        vec3 reflected = reflect(unit_vector(r_in.direction()), normal);
-        scattered = ray(rec.p, reflected + mat.fuzz * random_in_unit_sphere(local_rand_state));
-        attenuation = mat.albedo;
-        return (dot(scattered.direction(), normal) > 0.0f);
+        vec3 reflected = reflect(r_in.direction(), normal);
+        vec3 out_dir = reflected + mat.fuzz * random_in_unit_sphere(local_rand_state);
+        if (dot(out_dir, normal) > 0.0f) {
+            r_in = ray(rec.p, out_dir);
+            attenuation *= mat.albedo;
+            return true;
+        }
+        return false;
     }
 
     case material::Dielectric:
@@ -79,14 +69,13 @@ __device__ bool scatter(const sphere& s, const material& mat, const ray& r_in, c
         vec3 outward_normal;
         vec3 reflected = reflect(r_in.direction(), normal);
         float ni_over_nt;
-        attenuation = vec3(1.0, 1.0, 1.0);
         vec3 refracted;
         float reflect_prob;
         float cosine;
         if (dot(r_in.direction(), normal) > 0.0f) {
             outward_normal = -normal;
             ni_over_nt = mat.ref_idx;
-            cosine = dot(r_in.direction(), normal) / r_in.direction().length();
+            cosine = dot(r_in.direction(), normal);
             cosine = sqrt(1.0f - mat.ref_idx * mat.ref_idx*(1 - cosine * cosine));
         }
         else {
@@ -99,9 +88,9 @@ __device__ bool scatter(const sphere& s, const material& mat, const ray& r_in, c
         else
             reflect_prob = 1.0f;
         if (random_float(local_rand_state) < reflect_prob)
-            scattered = ray(rec.p, reflected);
+            r_in = ray(rec.p, reflected);
         else
-            scattered = ray(rec.p, refracted);
+            r_in = ray(rec.p, refracted);
         return true;
     }
 

@@ -40,19 +40,12 @@ __device__ vec3 color(const ray& r, rand_state& rand_state) {
     for (int i = 0; i < 50; i++) {
         hit_record rec;
         if (hit_spheres(d_spheres, kSphereCount, cur_ray, 0.001f, FLT_MAX, rec)) {
-            ray scattered;
-            vec3 attenuation;
-            if (scatter(d_spheres[rec.hit_idx], d_materials[rec.hit_idx], cur_ray, rec, attenuation, scattered, rand_state)) {
-                cur_attenuation *= attenuation;
-                cur_ray = scattered;
-            }
-            else {
+            if (!scatter(d_spheres[rec.hit_idx], d_materials[rec.hit_idx], cur_ray, cur_attenuation, rec, rand_state)) {
                 return vec3(0.0, 0.0, 0.0);
             }
         }
         else {
-            vec3 unit_direction = unit_vector(cur_ray.direction());
-            float t = 0.5f*(unit_direction.y() + 1.0f);
+            float t = 0.5f*(cur_ray.direction().y() + 1.0f);
             vec3 c = (1.0f - t)*vec3(1.0, 1.0, 1.0) + t * vec3(0.5, 0.7, 1.0);
             return cur_attenuation * c;
         }

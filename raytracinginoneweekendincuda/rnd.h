@@ -1,6 +1,7 @@
 #pragma once
 
 #include "vec3.h"
+#include "math_functions.h"
 
 typedef unsigned int rand_state;
 
@@ -25,9 +26,21 @@ __device__ vec3 random_in_unit_disk(rand_state& state)
 {
     const float a = random_float(state) * 2.0f * kPI;
     const float u = sqrtf(random_float(state));
-    return vec3(u*cosf(a), u*sinf(a), 0);
+    float c, s;
+    sincosf(a, &s, &c);
+    return vec3(u*c, u*s, 0);
 }
 
+__device__ vec3 random_in_unit_sphere(rand_state& state) {
+    float z = random_float(state) * 2.0f - 1.0f;
+    float t = random_float(state) * 2.0f * kPI;
+    float r = sqrtf(fmaxf(0.0, 1.0f - z * z));
+    float c, s;
+    sincosf(t, &s, &c);
+    vec3 res = vec3(r*c, r*s, z);
+    res *= cbrtf(random_float(state));
+    return res;
+}
 
 /*
 * based off http://www.reedbeta.com/blog/quick-and-easy-gpu-random-numbers-in-d3d11/
