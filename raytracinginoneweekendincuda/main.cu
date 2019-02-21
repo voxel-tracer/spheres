@@ -147,16 +147,22 @@ void write_image(const char* output_file, const vec3 *fb, const int nx, const in
     delete[] data;
 }
 
-int main(int argc, char** argv) {
-    int nx = 1200;
-    int ny = 800;
-    int ns = 10;
-    int tx = 8;
-    int ty = 8;
+int cmpfunc(const void * a, const void * b) {
+    if (*(double*)a > *(double*)b)
+        return 1;
+    else if (*(double*)a < *(double*)b)
+        return -1;
+    else
+        return 0;
+}
 
-    if (argc > 1) {
-        ns = strtol(argv[1], NULL, 10);
-    }
+int main(int argc, char** argv) {
+    const int nx = 1200;
+    const int ny = 800;
+    const int ns = (argc > 1) ? strtol(argv[1], NULL, 10) : 1;
+    const int tx = 8;
+    const int ty = 8;
+    const int nr = (argc > 2) ? strtol(argv[2], NULL, 10) : 1;
     
     std::cerr << "Rendering a " << nx << "x" << ny << " image with " << ns << " samples per pixel ";
     std::cerr << "in " << tx << "x" << ty << " blocks.\n";
@@ -179,17 +185,27 @@ int main(int argc, char** argv) {
 
     camera cam = setup_camera(nx, ny);
 
-    clock_t start, stop;
-    start = clock();
-    // Render our buffer
-    dim3 blocks(nx / tx + 1, ny / ty + 1);
-    dim3 threads(tx, ty);
-    render << <blocks, threads >> >(d_fb, nx, ny, ns, cam);
-    checkCudaErrors(cudaGetLastError());
-    checkCudaErrors(cudaDeviceSynchronize());
-    stop = clock();
-    double timer_seconds = ((double)(stop - start)) / CLOCKS_PER_SEC;
-    std::cerr << "took " << timer_seconds << " seconds.\n";
+    double *runs = new double[nr];
+    for (int r = 0; r < nr; r++) {
+        clock_t start, stop;
+        start = clock();
+        // Render our buffer
+        dim3 blocks(nx / tx + 1, ny / ty + 1);
+        dim3 threads(tx, ty);
+        render << <blocks, threads >> >(d_fb, nx, ny, ns, cam);
+        checkCudaErrors(cudaGetLastError());
+        checkCudaErrors(cudaDeviceSynchronize());
+        stop = clock();
+        runs[r] = ((double)(stop - start)) / CLOCKS_PER_SEC;
+        std::cerr << "took " << runs[r] << " seconds.\n";
+    }
+    if (nr > 1) {
+        // compute median
+        std::qsort(runs, nr, sizeof(double), cmpfunc);
+        std::cerr << "median run took " << runs[nr / 2] << " seconds.\n";
+    }
+    delete[] runs;
+    runs = NULL;
 
     // Output FB as Image
     vec3* h_fb = new vec3[fb_size];
