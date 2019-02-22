@@ -54,16 +54,23 @@ __device__ vec3 color(const ray& r, rand_state& rand_state) {
 }
 
 __global__ void render(vec3 *fb, int max_x, int max_y, int ns, const camera cam) {
-    // 1D blocks
-    const int rIdx = (threadIdx.x + blockIdx.x*blockDim.x);
-    if (rIdx >= (max_x*max_y*ns)) return;
-    rand_state state = (wang_hash(rIdx) * 336343633) | 1;
-    const int y = rIdx / (max_x*ns);
-    const int x = (rIdx % max_x) / ns;
-    float u = float(x + random_float(state)) / float(max_x);
-    float v = float(y + random_float(state)) / float(max_y);
-    ray r = cam.get_ray(u, v, state);
-    fb[rIdx] = color(r, state);
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    int j = threadIdx.y + blockIdx.y * blockDim.y;
+    if ((i >= max_x) || (j >= max_y)) return;
+    int pixel_index = j * max_x + i;
+    rand_state state = (wang_hash(pixel_index) * 336343633) | 1;
+    vec3 col(0, 0, 0);
+    for (int s = 0; s < ns; s++) {
+        float u = float(i + random_float(state)) / float(max_x);
+        float v = float(j + random_float(state)) / float(max_y);
+        ray r = cam.get_ray(u, v, state);
+        col += color(r, state);
+    }
+    col /= float(ns);
+    col[0] = sqrt(col[0]);
+    col[1] = sqrt(col[1]);
+    col[2] = sqrt(col[2]);
+    fb[pixel_index] = col;
 }
 
 float rand(unsigned int &state) {
@@ -125,20 +132,15 @@ camera setup_camera(int nx, int ny) {
         dist_to_focus);
 }
 
-void write_image(const char* output_file, const vec3 *fb, const int nx, const int ny, const int ns) {
+void write_image(const char* output_file, const vec3 *fb, const int nx, const int ny) {
     char *data = new char[nx * ny * 3];
     int idx = 0;
     for (int j = ny - 1; j >= 0; j--) {
         for (int i = 0; i < nx; i++) {
-            size_t pixel_index = (j * nx + i) * ns;
-            vec3 col(0, 0, 0);
-            for (int s = 0; s < ns; s++)
-                col += fb[pixel_index++];
-            col /= ns;
-
-            data[idx++] = int(255.99*sqrtf(col.r()));
-            data[idx++] = int(255.99*sqrtf(col.g()));
-            data[idx++] = int(255.99*sqrtf(col.b()));
+            size_t pixel_index = j * nx + i;
+            data[idx++] = int(255.99*fb[pixel_index].r());
+            data[idx++] = int(255.99*fb[pixel_index].g());
+            data[idx++] = int(255.99*fb[pixel_index].b());
         }
     }
     stbi_write_png(output_file, nx, ny, 3, (void*)data, nx * 3);
@@ -158,13 +160,14 @@ int main(int argc, char** argv) {
     const int nx = 1200;
     const int ny = 800;
     const int ns = (argc > 1) ? strtol(argv[1], NULL, 10) : 1;
-    int block_size = 64;
+    const int tx = 8;
+    const int ty = 8;
     const int nr = (argc > 2) ? strtol(argv[2], NULL, 10) : 1;
     
     std::cerr << "Rendering a " << nx << "x" << ny << " image with " << ns << " samples per pixel ";
-    std::cerr << "in " << block_size << " blocks.\n";
+    std::cerr << "in " << tx << "x" << ty << " blocks.\n";
 
-    int num_pixels = nx * ny * ns;
+    int num_pixels = nx * ny;
     size_t fb_size = num_pixels * sizeof(vec3);
 
     // allocate FB
@@ -187,8 +190,8 @@ int main(int argc, char** argv) {
         clock_t start, stop;
         start = clock();
         // Render our buffer
-        dim3 blocks((nx*ny*ns) / block_size + 1);
-        dim3 threads(block_size);
+        dim3 blocks(nx / tx + 1, ny / ty + 1);
+        dim3 threads(tx, ty);
         render << <blocks, threads >> >(d_fb, nx, ny, ns, cam);
         checkCudaErrors(cudaGetLastError());
         checkCudaErrors(cudaDeviceSynchronize());
@@ -207,7 +210,7 @@ int main(int argc, char** argv) {
     // Output FB as Image
     vec3* h_fb = new vec3[fb_size];
     checkCudaErrors(cudaMemcpy(h_fb, d_fb, fb_size, cudaMemcpyDeviceToHost));
-    write_image("output.png", h_fb, nx, ny, ns);
+    write_image("output.png", h_fb, nx, ny);
     delete[] h_fb;
     h_fb = NULL;
 
