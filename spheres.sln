@@ -3,7 +3,7 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio 15
 VisualStudioVersion = 15.0.27703.2035
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "raytracinginoneweekendincuda", "raytracinginoneweekendincuda\raytracinginoneweekendincuda.vcxproj", "{3915A8D4-9D52-4D26-B4D5-1A89E006C908}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "spheres", "spheres\spheres.vcxproj", "{59A47D7B-BA18-4F5A-B85C-E45B0C8DC4AC}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -11,10 +11,10 @@ Global
 		Release|x64 = Release|x64
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
-		{3915A8D4-9D52-4D26-B4D5-1A89E006C908}.Debug|x64.ActiveCfg = Debug|x64
-		{3915A8D4-9D52-4D26-B4D5-1A89E006C908}.Debug|x64.Build.0 = Debug|x64
-		{3915A8D4-9D52-4D26-B4D5-1A89E006C908}.Release|x64.ActiveCfg = Release|x64
-		{3915A8D4-9D52-4D26-B4D5-1A89E006C908}.Release|x64.Build.0 = Release|x64
+		{59A47D7B-BA18-4F5A-B85C-E45B0C8DC4AC}.Debug|x64.ActiveCfg = Debug|x64
+		{59A47D7B-BA18-4F5A-B85C-E45B0C8DC4AC}.Debug|x64.Build.0 = Debug|x64
+		{59A47D7B-BA18-4F5A-B85C-E45B0C8DC4AC}.Release|x64.ActiveCfg = Release|x64
+		{59A47D7B-BA18-4F5A-B85C-E45B0C8DC4AC}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

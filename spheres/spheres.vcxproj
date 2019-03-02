@@ -11,9 +11,10 @@
     </ProjectConfiguration>
   </ItemGroup>
   <PropertyGroup Label="Globals">
-    <ProjectGuid>{3915A8D4-9D52-4D26-B4D5-1A89E006C908}</ProjectGuid>
+    <ProjectGuid>{59A47D7B-BA18-4F5A-B85C-E45B0C8DC4AC}</ProjectGuid>
     <RootNamespace>raytracinginoneweekendincuda</RootNamespace>
     <WindowsTargetPlatformVersion>10.0.17134.0</WindowsTargetPlatformVersion>
+    <ProjectName>spheres</ProjectName>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
