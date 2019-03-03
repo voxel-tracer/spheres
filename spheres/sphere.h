@@ -12,21 +12,19 @@ struct hit_record
 
 struct sphere  {
         sphere() {}
-        sphere(vec3 cen, float r) : center(cen), radius(r) {};
+        sphere(vec3 cen) : center(cen) {};
 
-        __device__ vec3 normal(const vec3& p) const { return (p - center) / radius; }
+        __device__ vec3 normal(const vec3& p) const { return p - center; }
 
         vec3 center;
-        float radius;
 };
 
 __device__ bool hit_sphere(const sphere& s, const ray& r, float t_min, float t_max, hit_record& rec) {
     const vec3 center = s.center;
-    const float radius = s.radius;
     vec3 oc = r.origin() - center;
     float a = dot(r.direction(), r.direction());
     float b = dot(oc, r.direction());
-    float c = dot(oc, oc) - radius*radius;
+    float c = dot(oc, oc) - 1;
     float discriminant = b*b - a*c;
     if (discriminant > 0) {
         float temp = (-b - sqrt(discriminant))/a;

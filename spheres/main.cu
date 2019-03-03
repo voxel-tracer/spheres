@@ -24,7 +24,7 @@ void check_cuda(cudaError_t result, char const *const func, const char *const fi
     }
 }
 
-const int kSphereCount = 22 * 22 + 1 + 3;
+const int kSphereCount = 22 * 22;
 
 __device__ __constant__ sphere d_spheres[kSphereCount];
 __device__ __constant__ vec3 d_materials[kSphereCount];
@@ -86,31 +86,23 @@ void setup_scene(sphere **h_spheres, vec3 **h_materials) {
 
     unsigned int rand_state = 0;
 
-    materials[0] = vec3(0.5, 0.5, 0.5);
-    spheres[0] = sphere(vec3(0, -1000.0, -1), 1000);
-    int i = 1;
+    int i = 0;
     for (int a = -11; a < 11; a++) {
         for (int b = -11; b < 11; b++) {
             vec3 center(a + RND, 0.2, b + RND);
             materials[i] = vec3(RND*RND, RND*RND, RND*RND);
-            spheres[i++] = sphere(center, 0.2);
+            spheres[i++] = sphere(center);
         }
     }
-    materials[i] = vec3(RND*RND, RND*RND, RND*RND);
-    spheres[i++] = sphere(vec3(0, 1, 0), 1.0);
-    materials[i] = vec3(RND*RND, RND*RND, RND*RND);
-    spheres[i++] = sphere(vec3(-4, 1, 0), 1.0);
-    materials[i] = vec3(RND*RND, RND*RND, RND*RND);
-    spheres[i++] = sphere(vec3(4, 1, 0), 1.0);
 
     *h_spheres = spheres;
     *h_materials = materials;
 }
 
 camera setup_camera(int nx, int ny) {
-    vec3 lookfrom(13, 2, 3);
+    vec3 lookfrom(10, 10, 10);
     vec3 lookat(0, 0, 0);
-    float dist_to_focus = 10.0; (lookfrom - lookat).length();
+    float dist_to_focus = (lookfrom - lookat).length();
     float aperture = 0.1;
     return camera(lookfrom,
         lookat,
