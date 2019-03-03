@@ -6,7 +6,6 @@
 #include "ray.h"
 #include "sphere.h"
 #include "camera.h"
-#include "material.h"
 
 #define STBI_MSC_SECURE_CRT
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -28,7 +27,7 @@ void check_cuda(cudaError_t result, char const *const func, const char *const fi
 const int kSphereCount = 22 * 22 + 1 + 3;
 
 __device__ __constant__ sphere d_spheres[kSphereCount];
-__device__ __constant__ material d_materials[kSphereCount];
+__device__ __constant__ vec3 d_materials[kSphereCount];
 
 // Matching the C++ code would recurse enough into color() calls that
 // it was blowing up the stack, so we have to turn this into a
@@ -40,9 +39,10 @@ __device__ vec3 color(const ray& r, rand_state& rand_state) {
     for (int i = 0; i < 50; i++) {
         hit_record rec;
         if (hit_spheres(d_spheres, kSphereCount, cur_ray, 0.001f, FLT_MAX, rec)) {
-            if (!scatter(d_spheres[rec.hit_idx], d_materials[rec.hit_idx], cur_ray, cur_attenuation, rec, rand_state)) {
-                return vec3(0.0, 0.0, 0.0);
-            }
+            const vec3 normal = d_spheres[rec.hit_idx].normal(rec.p);
+            vec3 target = normal + random_in_unit_sphere(rand_state);
+            cur_ray = ray(rec.p, target);
+            cur_attenuation *= d_materials[rec.hit_idx];
         }
         else {
             float t = 0.5f*(cur_ray.direction().y() + 1.0f);
@@ -80,38 +80,27 @@ float rand(unsigned int &state) {
 
 #define RND (rand(rand_state))
 
-void setup_scene(sphere **h_spheres, material **h_materials) {
+void setup_scene(sphere **h_spheres, vec3 **h_materials) {
     sphere* spheres = new sphere[kSphereCount];
-    material* materials = new material[kSphereCount];
+    vec3* materials = new vec3[kSphereCount];
 
     unsigned int rand_state = 0;
 
-    materials[0] = material(material::Lambertian, vec3(0.5, 0.5, 0.5), 0, 0);
+    materials[0] = vec3(0.5, 0.5, 0.5);
     spheres[0] = sphere(vec3(0, -1000.0, -1), 1000);
     int i = 1;
     for (int a = -11; a < 11; a++) {
         for (int b = -11; b < 11; b++) {
-            float choose_mat = RND;
             vec3 center(a + RND, 0.2, b + RND);
-            if (choose_mat < 0.8f) {
-                materials[i] = material(material::Lambertian, vec3(RND*RND, RND*RND, RND*RND), 0, 0);
-                spheres[i++] = sphere(center, 0.2);
-            }
-            else if (choose_mat < 0.95f) {
-                materials[i] = material(material::Metal, vec3(0.5f*(1.0f + RND), 0.5f*(1.0f + RND), 0.5f*(1.0f + RND)), 0.5f*RND, 0);
-                spheres[i++] = sphere(center, 0.2);
-            }
-            else {
-                materials[i] = material(material::Dielectric, vec3(), 0, 1.5);
-                spheres[i++] = sphere(center, 0.2);
-            }
+            materials[i] = vec3(RND*RND, RND*RND, RND*RND);
+            spheres[i++] = sphere(center, 0.2);
         }
     }
-    materials[i] = material(material::Dielectric, vec3(), 0, 1.5);
+    materials[i] = vec3(RND*RND, RND*RND, RND*RND);
     spheres[i++] = sphere(vec3(0, 1, 0), 1.0);
-    materials[i] = material(material::Lambertian, vec3(0.4, 0.2, 0.1), 0, 0);
+    materials[i] = vec3(RND*RND, RND*RND, RND*RND);
     spheres[i++] = sphere(vec3(-4, 1, 0), 1.0);
-    materials[i] = material(material::Metal, vec3(0.7, 0.6, 0.5), 0, 0);
+    materials[i] = vec3(RND*RND, RND*RND, RND*RND);
     spheres[i++] = sphere(vec3(4, 1, 0), 1.0);
 
     *h_spheres = spheres;
@@ -176,12 +165,12 @@ int main(int argc, char** argv) {
 
     // setup scene
     sphere* h_spheres;
-    material* h_materials;
+    vec3* h_materials;
     setup_scene(&h_spheres, &h_materials);
 
     // copy the scene to constant memory
     checkCudaErrors(cudaMemcpyToSymbol(d_spheres, h_spheres, kSphereCount * sizeof(sphere)));
-    checkCudaErrors(cudaMemcpyToSymbol(d_materials, h_materials, kSphereCount * sizeof(material)));
+    checkCudaErrors(cudaMemcpyToSymbol(d_materials, h_materials, kSphereCount * sizeof(vec3)));
 
     camera cam = setup_camera(nx, ny);
 

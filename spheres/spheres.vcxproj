@@ -88,7 +88,6 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="camera.h" />
-    <ClInclude Include="material.h" />
     <ClInclude Include="ray.h" />
     <ClInclude Include="rnd.h" />
     <ClInclude Include="sphere.h" />
