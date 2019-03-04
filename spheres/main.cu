@@ -27,7 +27,6 @@ void check_cuda(cudaError_t result, char const *const func, const char *const fi
 const int kSphereCount = 22 * 22;
 
 __device__ __constant__ sphere d_spheres[kSphereCount];
-__device__ __constant__ vec3 d_materials[kSphereCount];
 
 // Matching the C++ code would recurse enough into color() calls that
 // it was blowing up the stack, so we have to turn this into a
@@ -42,7 +41,7 @@ __device__ vec3 color(const ray& r, rand_state& rand_state) {
             const vec3 normal = d_spheres[rec.hit_idx].normal(rec.p);
             vec3 target = normal + random_in_unit_sphere(rand_state);
             cur_ray = ray(rec.p, target);
-            cur_attenuation *= d_materials[rec.hit_idx];
+            cur_attenuation *= vec3(.35f, .35f, .35f);
         }
         else {
             float t = 0.5f*(cur_ray.direction().y() + 1.0f);
@@ -80,9 +79,8 @@ float rand(unsigned int &state) {
 
 #define RND (rand(rand_state))
 
-void setup_scene(sphere **h_spheres, vec3 **h_materials) {
+void setup_scene(sphere **h_spheres) {
     sphere* spheres = new sphere[kSphereCount];
-    vec3* materials = new vec3[kSphereCount];
 
     unsigned int rand_state = 0;
 
@@ -90,13 +88,11 @@ void setup_scene(sphere **h_spheres, vec3 **h_materials) {
     for (int a = -11; a < 11; a++) {
         for (int b = -11; b < 11; b++) {
             vec3 center(a + RND, 0.2, b + RND);
-            materials[i] = vec3(RND*RND, RND*RND, RND*RND);
             spheres[i++] = sphere(center);
         }
     }
 
     *h_spheres = spheres;
-    *h_materials = materials;
 }
 
 camera setup_camera(int nx, int ny) {
@@ -157,12 +153,10 @@ int main(int argc, char** argv) {
 
     // setup scene
     sphere* h_spheres;
-    vec3* h_materials;
-    setup_scene(&h_spheres, &h_materials);
+    setup_scene(&h_spheres);
 
     // copy the scene to constant memory
     checkCudaErrors(cudaMemcpyToSymbol(d_spheres, h_spheres, kSphereCount * sizeof(sphere)));
-    checkCudaErrors(cudaMemcpyToSymbol(d_materials, h_materials, kSphereCount * sizeof(vec3)));
 
     camera cam = setup_camera(nx, ny);
 
