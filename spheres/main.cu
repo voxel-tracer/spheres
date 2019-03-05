@@ -2,6 +2,14 @@
 #include <time.h>
 #include <float.h>
 #include <curand_kernel.h>
+
+#include <string>
+#include <vector>
+#include <sstream>
+#include <iostream>
+#include <fstream>
+
+#include <vector>
 #include "vec3.h"
 #include "ray.h"
 #include "sphere.h"
@@ -11,12 +19,14 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
+using namespace std;
+
 // limited version of checkCudaErrors from helper_cuda.h in CUDA examples
 #define checkCudaErrors(val) check_cuda( (val), #val, __FILE__, __LINE__ )
 
 void check_cuda(cudaError_t result, char const *const func, const char *const file, int const line) {
     if (result) {
-        std::cerr << "CUDA error = " << cudaGetErrorString(result) << " at " <<
+        cerr << "CUDA error = " << cudaGetErrorString(result) << " at " <<
             file << ":" << line << " '" << func << "' \n";
         // Make sure we call CUDA Device Reset before exiting
         cudaDeviceReset();
@@ -24,7 +34,7 @@ void check_cuda(cudaError_t result, char const *const func, const char *const fi
     }
 }
 
-const int kSphereCount = 22 * 22;
+const int kSphereCount = 5001;
 
 __device__ __constant__ sphere d_spheres[kSphereCount];
 
@@ -79,24 +89,72 @@ float rand(unsigned int &state) {
 
 #define RND (rand(rand_state))
 
-void setup_scene(sphere **h_spheres) {
-    sphere* spheres = new sphere[kSphereCount];
 
-    unsigned int rand_state = 0;
+/**
+* Reads csv file into table, exported as a vector of vector of doubles.
+* @param inputFileName input file name (full path).
+* @return data as vector of vector of doubles.
+*
+* code adapted from https://waterprogramming.wordpress.com/2017/08/20/reading-csv-files-in-c/
+*/
+vector<vector<float>> parse2DCsvFile(string inputFileName) {
 
-    int i = 0;
-    for (int a = -11; a < 11; a++) {
-        for (int b = -11; b < 11; b++) {
-            vec3 center(a + RND, 0.2, b + RND);
-            spheres[i++] = sphere(center);
+    vector<vector<float> > data;
+    ifstream inputFile(inputFileName);
+    int l = 0;
+
+    while (inputFile) {
+        l++;
+        string s;
+        if (!getline(inputFile, s)) break;
+        if (s[0] != '#') {
+            istringstream ss(s);
+            vector<float> record;
+
+            while (ss) {
+                string line;
+                if (!getline(ss, line, ','))
+                    break;
+                try {
+                    record.push_back(stof(line));
+                }
+                catch (const std::invalid_argument e) {
+                    cout << "NaN found in file " << inputFileName << " line " << l
+                        << endl;
+                    e.what();
+                }
+            }
+
+            data.push_back(record);
         }
     }
 
-    *h_spheres = spheres;
+    if (!inputFile.eof()) {
+        cerr << "Could not read file " << inputFileName << "\n";
+        exit(99);
+    }
+
+    return data;
+}
+
+sphere* setup_scene() {
+    sphere* spheres = new sphere[kSphereCount];
+
+    cerr << "Loading spheres from disk\n";
+    vector<vector<float>> data = parse2DCsvFile("s5k.csv");
+    int i = 0;
+    for (auto l : data) {
+        vec3 center(l[2], l[3], l[4]);
+        spheres[i++] = sphere(center);
+    }
+
+    cout << "scene uses " << kSphereCount * sizeof(vec3) << " bytes";
+
+    return spheres;
 }
 
 camera setup_camera(int nx, int ny) {
-    vec3 lookfrom(10, 10, 10);
+    vec3 lookfrom(100, 100, 100);
     vec3 lookat(0, 0, 0);
     float dist_to_focus = (lookfrom - lookat).length();
     float aperture = 0.1;
@@ -141,8 +199,8 @@ int main(int argc, char** argv) {
     const int ty = 8;
     const int nr = (argc > 2) ? strtol(argv[2], NULL, 10) : 1;
     
-    std::cerr << "Rendering a " << nx << "x" << ny << " image with " << ns << " samples per pixel ";
-    std::cerr << "in " << tx << "x" << ty << " blocks.\n";
+    cerr << "Rendering a " << nx << "x" << ny << " image with " << ns << " samples per pixel ";
+    cerr << "in " << tx << "x" << ty << " blocks.\n";
 
     int num_pixels = nx * ny;
     size_t fb_size = num_pixels * sizeof(vec3);
@@ -152,8 +210,7 @@ int main(int argc, char** argv) {
     checkCudaErrors(cudaMalloc((void **)&d_fb, fb_size));
 
     // setup scene
-    sphere* h_spheres;
-    setup_scene(&h_spheres);
+    sphere* h_spheres = setup_scene();
 
     // copy the scene to constant memory
     checkCudaErrors(cudaMemcpyToSymbol(d_spheres, h_spheres, kSphereCount * sizeof(sphere)));
@@ -172,12 +229,12 @@ int main(int argc, char** argv) {
         checkCudaErrors(cudaDeviceSynchronize());
         stop = clock();
         runs[r] = ((double)(stop - start)) / CLOCKS_PER_SEC;
-        std::cerr << "took " << runs[r] << " seconds.\n";
+        cerr << "took " << runs[r] << " seconds.\n";
     }
     if (nr > 1) {
         // compute median
-        std::qsort(runs, nr, sizeof(double), cmpfunc);
-        std::cerr << "median run took " << runs[nr / 2] << " seconds.\n";
+        qsort(runs, nr, sizeof(double), cmpfunc);
+        cerr << "median run took " << runs[nr / 2] << " seconds.\n";
     }
     delete[] runs;
     runs = NULL;
