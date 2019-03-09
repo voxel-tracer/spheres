@@ -19,11 +19,19 @@ struct sphere  {
         vec3 center;
 };
 
-__device__ bool hit_bbox(const sphere& s, const ray& r, float t_min, float t_max, hit_record& rec) {
+struct scene {
+    sphere* spheres;
+    int count;
+
+    vec3 min;
+    vec3 max;
+};
+
+__device__ bool hit_bbox(const vec3& min, const vec3& max, const ray& r, float t_min, float t_max, hit_record& rec) {
     for (int a = 0; a < 3; a++) {
         float invD = 1.0f / r.direction()[a];
-        float t0 = (s.center[a] - 1 - r.origin()[a])*invD;
-        float t1 = (s.center[a] + 1 - r.origin()[a])*invD;
+        float t0 = (min[a] - r.origin()[a])*invD;
+        float t1 = (max[a] - r.origin()[a])*invD;
         if (invD < 0.0f) {
             float tmp = t0; t0 = t1; t1 = tmp;
         }
@@ -62,12 +70,16 @@ __device__ bool hit_sphere(const sphere& s, const ray& r, float t_min, float t_m
     return false;
 }
 
-__device__ bool hit_spheres(const sphere* spheres, const int numSpheres, const ray& r, float t_min, float t_max, hit_record& rec) {
+__device__ bool hit_spheres(const scene& sc, const ray& r, float t_min, float t_max, hit_record& rec) {
     hit_record temp_rec;
     bool hit_anything = false;
     float closest_so_far = t_max;
-    for (int i = 0; i < numSpheres; i++) {
-        const sphere s = spheres[i];
+
+    //if (!hit_bbox(sc.min, sc.max, r, t_min, t_max, temp_rec))
+    //    return false;
+
+    for (int i = 0; i < sc.count; i++) {
+        const sphere s = sc.spheres[i];
         if (hit_sphere(s, r, t_min, closest_so_far, temp_rec)) {
             hit_anything = true;
             closest_so_far = temp_rec.t;

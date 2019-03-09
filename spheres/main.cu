@@ -34,11 +34,6 @@ void check_cuda(cudaError_t result, char const *const func, const char *const fi
     }
 }
 
-struct scene {
-    sphere* spheres;
-    int count;
-};
-
 // Matching the C++ code would recurse enough into color() calls that
 // it was blowing up the stack, so we have to turn this into a
 // limited-depth loop instead.  Later code in the book limits to a max
@@ -48,7 +43,7 @@ __device__ vec3 color(const ray& r, const scene s, rand_state& rand_state) {
     vec3 cur_attenuation = vec3(1.0, 1.0, 1.0);
     for (int i = 0; i < 50; i++) {
         hit_record rec;
-        if (hit_spheres(s.spheres, s.count, cur_ray, 0.001f, FLT_MAX, rec)) {
+        if (hit_spheres(s, cur_ray, 0.001f, FLT_MAX, rec)) {
             const vec3 normal = s.spheres[rec.hit_idx].normal(rec.p);
             vec3 target = normal + random_in_unit_sphere(rand_state);
             cur_ray = ray(rec.p, target);
@@ -145,10 +140,20 @@ void setup_scene(const char *input, scene &sc) {
     cout << "  found " << sc.count << " spheres" << endl;
     sphere* spheres = new sphere[sc.count];
     int i = 0;
+    vec3 min_all, max_all;
     for (auto l : data) {
         vec3 center(l[2], l[3], l[4]);
+        for (int a = 0; a < 3; a++) {
+            if (center[a] < min_all[a])
+                min_all[a] = center[a];
+            if (center[a] > max_all[a])
+                max_all[a] = center[a];
+        }
         spheres[i++] = sphere(center);
     }
+
+    sc.min = min_all - vec3(1, 1, 1);
+    sc.max = max_all + vec3(1, 1, 1);
 
     const int scene_size = sc.count * sizeof(vec3);
     cout << "scene uses " << scene_size << " bytes" << endl;
