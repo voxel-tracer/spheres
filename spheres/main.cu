@@ -34,21 +34,22 @@ void check_cuda(cudaError_t result, char const *const func, const char *const fi
     }
 }
 
-const int kSphereCount = 5001;
-
-__device__ __constant__ sphere d_spheres[kSphereCount];
+struct scene {
+    sphere* spheres;
+    int count;
+};
 
 // Matching the C++ code would recurse enough into color() calls that
 // it was blowing up the stack, so we have to turn this into a
 // limited-depth loop instead.  Later code in the book limits to a max
 // depth of 50, so we adapt this a few chapters early on the GPU.
-__device__ vec3 color(const ray& r, rand_state& rand_state) {
+__device__ vec3 color(const ray& r, const scene s, rand_state& rand_state) {
     ray cur_ray = r;
     vec3 cur_attenuation = vec3(1.0, 1.0, 1.0);
     for (int i = 0; i < 50; i++) {
         hit_record rec;
-        if (hit_spheres(d_spheres, kSphereCount, cur_ray, 0.001f, FLT_MAX, rec)) {
-            const vec3 normal = d_spheres[rec.hit_idx].normal(rec.p);
+        if (hit_spheres(s.spheres, s.count, cur_ray, 0.001f, FLT_MAX, rec)) {
+            const vec3 normal = s.spheres[rec.hit_idx].normal(rec.p);
             vec3 target = normal + random_in_unit_sphere(rand_state);
             cur_ray = ray(rec.p, target);
             cur_attenuation *= vec3(.35f, .35f, .35f);
@@ -62,7 +63,7 @@ __device__ vec3 color(const ray& r, rand_state& rand_state) {
     return vec3(0.0, 0.0, 0.0); // exceeded recursion
 }
 
-__global__ void render(vec3 *fb, int max_x, int max_y, int ns, const camera cam) {
+__global__ void render(vec3 *fb, const scene sc, int max_x, int max_y, int ns, const camera cam) {
     int i = threadIdx.x + blockIdx.x * blockDim.x;
     int j = threadIdx.y + blockIdx.y * blockDim.y;
     if ((i >= max_x) || (j >= max_y)) return;
@@ -73,7 +74,7 @@ __global__ void render(vec3 *fb, int max_x, int max_y, int ns, const camera cam)
         float u = float(i + random_float(state)) / float(max_x);
         float v = float(j + random_float(state)) / float(max_y);
         ray r = cam.get_ray(u, v, state);
-        col += color(r, state);
+        col += color(r, sc, state);
     }
     col /= float(ns);
     col[0] = sqrt(col[0]);
@@ -137,24 +138,30 @@ vector<vector<float>> parse2DCsvFile(string inputFileName) {
     return data;
 }
 
-sphere* setup_scene() {
-    sphere* spheres = new sphere[kSphereCount];
-
-    cerr << "Loading spheres from disk\n";
-    vector<vector<float>> data = parse2DCsvFile("s5k.csv");
+void setup_scene(const char *input, scene &sc) {
+    cout << "Loading spheres from disk" << endl;
+    vector<vector<float>> data = parse2DCsvFile(input);
+    sc.count = data.size();
+    cout << "  found " << sc.count << " spheres" << endl;
+    sphere* spheres = new sphere[sc.count];
     int i = 0;
     for (auto l : data) {
         vec3 center(l[2], l[3], l[4]);
         spheres[i++] = sphere(center);
     }
 
-    cout << "scene uses " << kSphereCount * sizeof(vec3) << " bytes";
+    const int scene_size = sc.count * sizeof(vec3);
+    cout << "scene uses " << scene_size << " bytes" << endl;
 
-    return spheres;
+    // copy spheres to device
+    checkCudaErrors(cudaMalloc((void **)&sc.spheres, scene_size));
+    cudaMemcpy(sc.spheres, spheres, scene_size, cudaMemcpyHostToDevice);
+
+    delete[] spheres;
 }
 
 camera setup_camera(int nx, int ny) {
-    vec3 lookfrom(100, 100, 100);
+    vec3 lookfrom(500, 500, 500);
     vec3 lookat(0, 0, 0);
     float dist_to_focus = (lookfrom - lookat).length();
     float aperture = 0.1;
@@ -192,12 +199,17 @@ int cmpfunc(const void * a, const void * b) {
 }
 
 int main(int argc, char** argv) {
+    if (argc < 2) {
+        cerr << "usage spheres file_name [num_samples] [num_runs]";
+        exit(-1);
+    }
+    const char* input = argv[1];
     const int nx = 1200;
     const int ny = 800;
-    const int ns = (argc > 1) ? strtol(argv[1], NULL, 10) : 1;
+    const int ns = (argc > 2) ? strtol(argv[2], NULL, 10) : 1;
     const int tx = 8;
     const int ty = 8;
-    const int nr = (argc > 2) ? strtol(argv[2], NULL, 10) : 1;
+    const int nr = (argc > 3) ? strtol(argv[3], NULL, 10) : 1;
     
     cerr << "Rendering a " << nx << "x" << ny << " image with " << ns << " samples per pixel ";
     cerr << "in " << tx << "x" << ty << " blocks.\n";
@@ -210,10 +222,8 @@ int main(int argc, char** argv) {
     checkCudaErrors(cudaMalloc((void **)&d_fb, fb_size));
 
     // setup scene
-    sphere* h_spheres = setup_scene();
-
-    // copy the scene to constant memory
-    checkCudaErrors(cudaMemcpyToSymbol(d_spheres, h_spheres, kSphereCount * sizeof(sphere)));
+    scene sc;
+    setup_scene(input, sc);
 
     camera cam = setup_camera(nx, ny);
 
@@ -224,7 +234,7 @@ int main(int argc, char** argv) {
         // Render our buffer
         dim3 blocks(nx / tx + 1, ny / ty + 1);
         dim3 threads(tx, ty);
-        render << <blocks, threads >> >(d_fb, nx, ny, ns, cam);
+        render << <blocks, threads >> >(d_fb, sc, nx, ny, ns, cam);
         checkCudaErrors(cudaGetLastError());
         checkCudaErrors(cudaDeviceSynchronize());
         stop = clock();
@@ -250,6 +260,7 @@ int main(int argc, char** argv) {
     checkCudaErrors(cudaDeviceSynchronize());
     checkCudaErrors(cudaGetLastError());
     checkCudaErrors(cudaFree(d_fb));
+    checkCudaErrors(cudaFree(sc.spheres));
 
     cudaDeviceReset();
 }
