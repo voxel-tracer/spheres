@@ -57,7 +57,7 @@
     </Link>
     <CudaCompile>
       <TargetMachinePlatform>64</TargetMachinePlatform>
-      <CodeGeneration>compute_50,sm_50</CodeGeneration>
+      <CodeGeneration>compute_61,sm_61</CodeGeneration>
     </CudaCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -90,6 +90,7 @@
     <ClInclude Include="camera.h" />
     <ClInclude Include="ray.h" />
     <ClInclude Include="rnd.h" />
+    <ClInclude Include="scene.h" />
     <ClInclude Include="sphere.h" />
     <ClInclude Include="stb_image_write.h" />
     <ClInclude Include="vec3.h" />

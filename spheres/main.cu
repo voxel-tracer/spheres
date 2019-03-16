@@ -1,38 +1,12 @@
-#include <iostream>
-#include <time.h>
 #include <float.h>
-#include <curand_kernel.h>
 
-#include <string>
-#include <vector>
-#include <sstream>
-#include <iostream>
-#include <fstream>
-
-#include <vector>
-#include "vec3.h"
 #include "ray.h"
-#include "sphere.h"
 #include "camera.h"
+#include "scene.h"
 
 #define STBI_MSC_SECURE_CRT
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
-
-using namespace std;
-
-// limited version of checkCudaErrors from helper_cuda.h in CUDA examples
-#define checkCudaErrors(val) check_cuda( (val), #val, __FILE__, __LINE__ )
-
-void check_cuda(cudaError_t result, char const *const func, const char *const file, int const line) {
-    if (result) {
-        cerr << "CUDA error = " << cudaGetErrorString(result) << " at " <<
-            file << ":" << line << " '" << func << "' \n";
-        // Make sure we call CUDA Device Reset before exiting
-        cudaDeviceReset();
-        exit(99);
-    }
-}
 
 // Matching the C++ code would recurse enough into color() calls that
 // it was blowing up the stack, so we have to turn this into a
@@ -40,13 +14,13 @@ void check_cuda(cudaError_t result, char const *const func, const char *const fi
 // depth of 50, so we adapt this a few chapters early on the GPU.
 __device__ vec3 color(const ray& r, const scene s, rand_state& rand_state) {
     ray cur_ray = r;
-    vec3 cur_attenuation = vec3(1.0, 1.0, 1.0);
+    vec3 cur_attenuation = vec3(1, 1, 1);
     for (int i = 0; i < 50; i++) {
         hit_record rec;
-        if (hit_spheres(s, cur_ray, 0.001f, FLT_MAX, rec)) {
-            const vec3 normal = s.spheres[rec.hit_idx].normal(rec.p);
-            vec3 target = normal + random_in_unit_sphere(rand_state);
-            cur_ray = ray(rec.p, target);
+        if (hit_bvh(s, cur_ray, 0.001f, FLT_MAX, rec)) {
+            const vec3 p = cur_ray.point_at_parameter(rec.t);
+            vec3 target = rec.n + random_in_unit_sphere(rand_state);
+            cur_ray = ray(p, target);
             cur_attenuation *= vec3(.35f, .35f, .35f);
         }
         else {
@@ -86,87 +60,8 @@ float rand(unsigned int &state) {
 #define RND (rand(rand_state))
 
 
-/**
-* Reads csv file into table, exported as a vector of vector of doubles.
-* @param inputFileName input file name (full path).
-* @return data as vector of vector of doubles.
-*
-* code adapted from https://waterprogramming.wordpress.com/2017/08/20/reading-csv-files-in-c/
-*/
-vector<vector<float>> parse2DCsvFile(string inputFileName) {
-
-    vector<vector<float> > data;
-    ifstream inputFile(inputFileName);
-    int l = 0;
-
-    while (inputFile) {
-        l++;
-        string s;
-        if (!getline(inputFile, s)) break;
-        if (s[0] != '#') {
-            istringstream ss(s);
-            vector<float> record;
-
-            while (ss) {
-                string line;
-                if (!getline(ss, line, ','))
-                    break;
-                try {
-                    record.push_back(stof(line));
-                }
-                catch (const std::invalid_argument e) {
-                    cout << "NaN found in file " << inputFileName << " line " << l
-                        << endl;
-                    e.what();
-                }
-            }
-
-            data.push_back(record);
-        }
-    }
-
-    if (!inputFile.eof()) {
-        cerr << "Could not read file " << inputFileName << "\n";
-        exit(99);
-    }
-
-    return data;
-}
-
-void setup_scene(const char *input, scene &sc) {
-    cout << "Loading spheres from disk" << endl;
-    vector<vector<float>> data = parse2DCsvFile(input);
-    sc.count = data.size();
-    cout << "  found " << sc.count << " spheres" << endl;
-    sphere* spheres = new sphere[sc.count];
-    int i = 0;
-    vec3 min_all, max_all;
-    for (auto l : data) {
-        vec3 center(l[2], l[3], l[4]);
-        for (int a = 0; a < 3; a++) {
-            if (center[a] < min_all[a])
-                min_all[a] = center[a];
-            if (center[a] > max_all[a])
-                max_all[a] = center[a];
-        }
-        spheres[i++] = sphere(center);
-    }
-
-    sc.min = min_all - vec3(1, 1, 1);
-    sc.max = max_all + vec3(1, 1, 1);
-
-    const int scene_size = sc.count * sizeof(vec3);
-    cout << "scene uses " << scene_size << " bytes" << endl;
-
-    // copy spheres to device
-    checkCudaErrors(cudaMalloc((void **)&sc.spheres, scene_size));
-    cudaMemcpy(sc.spheres, spheres, scene_size, cudaMemcpyHostToDevice);
-
-    delete[] spheres;
-}
-
-camera setup_camera(int nx, int ny) {
-    vec3 lookfrom(500, 500, 500);
+camera setup_camera(int nx, int ny, float dist) {
+    vec3 lookfrom(dist, dist, dist);
     vec3 lookat(0, 0, 0);
     float dist_to_focus = (lookfrom - lookat).length();
     float aperture = 0.1;
@@ -215,6 +110,7 @@ int main(int argc, char** argv) {
     const int tx = 8;
     const int ty = 8;
     const int nr = (argc > 3) ? strtol(argv[3], NULL, 10) : 1;
+    const int dist = (argc > 4) ? strtof(argv[4], NULL) : 100;
     
     cerr << "Rendering a " << nx << "x" << ny << " image with " << ns << " samples per pixel ";
     cerr << "in " << tx << "x" << ty << " blocks.\n";
@@ -230,7 +126,7 @@ int main(int argc, char** argv) {
     scene sc;
     setup_scene(input, sc);
 
-    camera cam = setup_camera(nx, ny);
+    camera cam = setup_camera(nx, ny, dist);
 
     double *runs = new double[nr];
     for (int r = 0; r < nr; r++) {
@@ -257,7 +153,9 @@ int main(int argc, char** argv) {
     // Output FB as Image
     vec3* h_fb = new vec3[fb_size];
     checkCudaErrors(cudaMemcpy(h_fb, d_fb, fb_size, cudaMemcpyDeviceToHost));
-    write_image("output.png", h_fb, nx, ny);
+    char file_name[100];
+    sprintf(file_name, "%s_%dx%dx%d_%d_bvh.png", input, nx, ny, ns, dist);
+    write_image(file_name, h_fb, nx, ny);
     delete[] h_fb;
     h_fb = NULL;
 
@@ -265,7 +163,7 @@ int main(int argc, char** argv) {
     checkCudaErrors(cudaDeviceSynchronize());
     checkCudaErrors(cudaGetLastError());
     checkCudaErrors(cudaFree(d_fb));
-    checkCudaErrors(cudaFree(sc.spheres));
+    checkCudaErrors(cudaFree(sc.bvh));
 
     cudaDeviceReset();
 }

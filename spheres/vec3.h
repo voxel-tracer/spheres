@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <iostream>
 
+#include <curand_kernel.h>
+
 class vec3  {
 
 
