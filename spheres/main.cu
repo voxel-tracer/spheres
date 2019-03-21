@@ -100,7 +100,7 @@ int cmpfunc(const void * a, const void * b) {
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        cerr << "usage spheres file_name [num_samples] [num_runs]";
+        cerr << "usage spheres file_name [num_samples=1] [num_runs=1] [camera_dist=100]";
         exit(-1);
     }
     const char* input = argv[1];

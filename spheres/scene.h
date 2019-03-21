@@ -90,11 +90,9 @@ struct bvh_node {
 };
 
 struct scene {
+    float* spheres;
     bvh_node* bvh;
     int count;
-
-    vec3 min;
-    vec3 max;
 };
 
 unsigned int g_state = 0;
@@ -170,29 +168,37 @@ void build_bvh(sphere *l, int n, scene& sc) {
 }
 
 void setup_scene(const char *input, scene &sc) {
-    cout << "Loading spheres from disk" << endl;
+    cout << "Loading spheres from disk";
     vector<vector<float>> data = parse2DCsvFile(input);
     int n = data.size();
-    cout << "  found " << n << " spheres" << endl;
+    cout << ", loaded " << n << " spheres";
     sphere* spheres = new sphere[n];
     int i = 0;
-    vec3 min_all, max_all;
     for (auto l : data) {
         vec3 center(l[2], l[3], l[4]);
-        for (int a = 0; a < 3; a++) {
-            if (center[a] < min_all[a])
-                min_all[a] = center[a];
-            if (center[a] > max_all[a])
-                max_all[a] = center[a];
-        }
         spheres[i++] = sphere(center);
     }
+    
+    const int scene_size = 32 * (n / 10); // store every 10 spheres in 32 floats (one mem lane)
+    cout << ", uses " << (scene_size * sizeof(float)) << " bytes" << endl;
 
-    sc.min = min_all - vec3(1, 1, 1);
-    sc.max = max_all + vec3(1, 1, 1);
+    // copy the spheres in array of floats
+    float *floats = new float[scene_size];
+    int idx = 0;
+    i = 0;
+    while (i < n) {
+        for (int j = 0; j < 10; j++, i++) {
+            floats[idx++] = spheres[i].center.x();
+            floats[idx++] = spheres[i].center.y();
+            floats[idx++] = spheres[i].center.z();
+        }
+        idx += 2; // padding
+    }
 
-    const int scene_size = n * sizeof(vec3);
-    cout << "scene uses " << scene_size << " bytes" << endl;
+    checkCudaErrors(cudaMalloc((void **)&sc.spheres, scene_size * sizeof(float)));
+    checkCudaErrors(cudaMemcpy(sc.spheres, floats, scene_size * sizeof(float), cudaMemcpyHostToDevice));
+
+    delete[] floats;
 
     cout << " building BVH...";
     clock_t start, stop;
