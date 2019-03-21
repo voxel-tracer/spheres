@@ -242,10 +242,10 @@ __device__ bool hit_bvh(const scene& sc, const ray& r, float t_min, float t_max,
 
     while (true) {
         if (down) {
-            if (idx >= sc.count) { // node is leaf
-                if (hit_bbox(node, r, t_min, closest)) {
-                    // compute index of first sphere's float
+            if (hit_bbox(node, r, t_min, closest)) {
+                if (idx >= sc.count) { // leaf node
                     int m = (idx - sc.count) * 32;
+                    #pragma unroll
                     for (int i = 0; i < 10; i++) {
                         vec3 center(sc.spheres[m++], sc.spheres[m++], sc.spheres[m++]);
                         if (hit_sphere(center, r, t_min, closest, rec)) {
@@ -253,13 +253,13 @@ __device__ bool hit_bvh(const scene& sc, const ray& r, float t_min, float t_max,
                             closest = rec.t;
                         }
                     }
+                    down = false;
                 }
-                down = false;
-            }
-            else if (hit_bbox(node, r, t_min, closest)) {
-                idx = idx * 2; // node = node.left
-                node = sc.bvh[idx];
-                // keep going down
+                else {
+                    // keep going down
+                    idx = idx * 2; // node = node.left
+                    node = sc.bvh[idx];
+                }
             }
             else {
                 down = false;
