@@ -10,6 +10,9 @@
 #include <string>
 #include <time.h>
 
+#undef NDEBUG
+#include <cassert>
+
 using namespace std;
 
 // limited version of checkCudaErrors from helper_cuda.h in CUDA examples
@@ -133,34 +136,40 @@ vec3 maxof(const sphere *l, int n) {
 }
 
 void build_bvh(bvh_node *nodes, int idx, sphere *l, int n) {
-    int axis = int(3 * drand48());
-    if (axis == 0)
-        qsort(l, n, sizeof(sphere), box_x_compare);
-    else if (axis == 1)
-        qsort(l, n, sizeof(sphere), box_y_compare);
-    else
-        qsort(l, n, sizeof(sphere), box_z_compare);
-        
-    if (n == 1)
-        nodes[idx] = bvh_node(l[0].center, l[0].center);
-    else if (n == 2)
-        nodes[idx] = bvh_node(l[0].center, l[1].center);
-    else {
-        nodes[idx] = bvh_node(minof(l, n), maxof(l, n));
+    assert(n >= 10);
+    nodes[idx] = bvh_node(minof(l, n), maxof(l, n));
+
+    if (n > 10) {
+        int axis = int(3 * drand48());
+        if (axis == 0)
+            qsort(l, n, sizeof(sphere), box_x_compare);
+        else if (axis == 1)
+            qsort(l, n, sizeof(sphere), box_y_compare);
+        else
+            qsort(l, n, sizeof(sphere), box_z_compare);
+
         build_bvh(nodes, idx * 2, l, n / 2);
         build_bvh(nodes, idx * 2 + 1, l + n / 2, n / 2);
     }
 }
 
 void build_bvh(sphere *l, int n, scene& sc) {
-    sc.count = powl(2, ceilf(log2(n / 2)));
-    cout << " of size " << 2 * sc.count << " ";
+    cout << " building BVH...";
+    clock_t start, stop;
+    start = clock();
+
+    sc.count = n / 10;
+    cout << " of size " << 2 * sc.count;
     bvh_node* nodes = new bvh_node[2 * sc.count];
     build_bvh(nodes, 1, l, n);
 
     // copy bvh to device
     int bvh_size = 2 * sc.count * sizeof(bvh_node);
-    cout << "bvh_size = " << bvh_size << endl;
+    cout << " uses " << bvh_size << " bytes...";
+
+    stop = clock();
+    cout << "done in " << ((double)(stop - start)) / CLOCKS_PER_SEC << "s" << endl;
+
     checkCudaErrors(cudaMalloc((void **)&sc.bvh, bvh_size));
     checkCudaErrors(cudaMemcpy(sc.bvh, nodes, bvh_size, cudaMemcpyHostToDevice));
 
@@ -182,7 +191,10 @@ void setup_scene(const char *input, scene &sc) {
     const int scene_size = 32 * (n / 10); // store every 10 spheres in 32 floats (one mem lane)
     cout << ", uses " << (scene_size * sizeof(float)) << " bytes" << endl;
 
+    build_bvh(spheres, n, sc);
+
     // copy the spheres in array of floats
+    // do it after we build the BVH as it would have moved the spheres around
     float *floats = new float[scene_size];
     int idx = 0;
     i = 0;
@@ -194,19 +206,12 @@ void setup_scene(const char *input, scene &sc) {
         }
         idx += 2; // padding
     }
+    assert(idx == scene_size);
 
     checkCudaErrors(cudaMalloc((void **)&sc.spheres, scene_size * sizeof(float)));
     checkCudaErrors(cudaMemcpy(sc.spheres, floats, scene_size * sizeof(float), cudaMemcpyHostToDevice));
 
     delete[] floats;
-
-    cout << " building BVH...";
-    clock_t start, stop;
-    start = clock();
-    build_bvh(spheres, n, sc);
-    stop = clock();
-    cout << "done in " << ((double)(stop - start)) / CLOCKS_PER_SEC << "s\n";
-
     delete[] spheres;
 }
 
@@ -238,13 +243,16 @@ __device__ bool hit_bvh(const scene& sc, const ray& r, float t_min, float t_max,
     while (true) {
         if (down) {
             if (idx >= sc.count) { // node is leaf
-                if (hit_sphere(node.left(), r, t_min, closest, rec)) {
-                    found = true;
-                    closest = rec.t;
-                }
-                if (hit_sphere(node.right(), r, t_min, closest, rec)) {
-                    found = true;
-                    closest = rec.t;
+                if (hit_bbox(node, r, t_min, closest)) {
+                    // compute index of first sphere's float
+                    int m = (idx - sc.count) * 32;
+                    for (int i = 0; i < 10; i++) {
+                        vec3 center(sc.spheres[m++], sc.spheres[m++], sc.spheres[m++]);
+                        if (hit_sphere(center, r, t_min, closest, rec)) {
+                            found = true;
+                            closest = rec.t;
+                        }
+                    }
                 }
                 down = false;
             }
