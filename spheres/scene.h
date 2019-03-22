@@ -88,6 +88,8 @@ struct bvh_node {
     __device__ vec3 left() const { return a; }
     __device__ vec3 right() const { return b; }
 
+    __host__ __device__ vec3 size() const { return b - a; }
+
     vec3 a;
     vec3 b;
 };
@@ -140,7 +142,8 @@ void build_bvh(bvh_node *nodes, int idx, sphere *l, int n) {
     nodes[idx] = bvh_node(minof(l, n), maxof(l, n));
 
     if (n > 10) {
-        int axis = int(3 * drand48());
+        const vec3 size = nodes[idx].size();
+        const unsigned int axis = max_component(size);
         if (axis == 0)
             qsort(l, n, sizeof(sphere), box_x_compare);
         else if (axis == 1)

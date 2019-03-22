@@ -140,9 +140,19 @@ __host__ __device__ inline vec3& vec3::operator/=(const float t) {
     return *this;
 }
 
-__host__ __device__ inline vec3 unit_vector(vec3 v) {
+__host__ __device__ inline vec3 unit_vector(const vec3 v) {
     float invLen = rsqrtf(dot(v, v));
     return v * invLen;
+}
+
+__host__ __device__ inline unsigned int min_component(const vec3 v) {
+    unsigned int min = (v[0] <= v[1]) ? 0 : 1;
+    return (v[min] <= v[2]) ? min : 2;
+}
+
+__host__ __device__ inline unsigned int max_component(const vec3 v) {
+    unsigned int max = (v[0] >= v[1]) ? 0 : 1;
+    return (v[max] >= v[2]) ? max : 2;
 }
 
 #endif
