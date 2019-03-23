@@ -15,7 +15,7 @@
 
 using namespace std;
 
-const unsigned int lane_size_float = 128 / sizeof(float);
+const unsigned int lane_size_float = 32 / sizeof(float);
 const unsigned int lane_size_spheres = lane_size_float / 3;
 const unsigned int lane_padding_float = lane_size_float - lane_size_spheres * 3;
 
