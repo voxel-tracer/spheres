@@ -15,6 +15,10 @@
 
 using namespace std;
 
+const unsigned int lane_size_float = 128 / sizeof(float);
+const unsigned int lane_size_spheres = lane_size_float / 3;
+const unsigned int lane_padding_float = lane_size_float - lane_size_spheres * 3;
+
 // limited version of checkCudaErrors from helper_cuda.h in CUDA examples
 #define checkCudaErrors(val) check_cuda( (val), #val, __FILE__, __LINE__ )
 
@@ -138,10 +142,10 @@ vec3 maxof(const sphere *l, int n) {
 }
 
 void build_bvh(bvh_node *nodes, int idx, sphere *l, int n) {
-    assert(n >= 10);
+    assert(n >= lane_size_spheres);
     nodes[idx] = bvh_node(minof(l, n), maxof(l, n));
 
-    if (n > 10) {
+    if (n > lane_size_spheres) {
         const vec3 size = nodes[idx].size();
         const unsigned int axis = max_component(size);
         if (axis == 0)
@@ -161,7 +165,7 @@ void build_bvh(sphere *l, int n, scene& sc) {
     clock_t start, stop;
     start = clock();
 
-    sc.count = n / 10;
+    sc.count = n / lane_size_spheres;
     cout << " of size " << 2 * sc.count;
     bvh_node* nodes = new bvh_node[2 * sc.count];
     build_bvh(nodes, 1, l, n);
@@ -191,28 +195,31 @@ void setup_scene(const char *input, scene &sc) {
         spheres[i++] = sphere(center);
     }
     
-    const int scene_size = 32 * (n / 10); // store every 10 spheres in 32 floats (one mem lane)
-    cout << ", uses " << (scene_size * sizeof(float)) << " bytes" << endl;
+    const int scene_size_float = lane_size_float * (n / lane_size_spheres);
+    cout << ", uses " << (scene_size_float * sizeof(float)) << " bytes" << endl;
 
     build_bvh(spheres, n, sc);
 
+    cout << "copying spheres to device" << endl;
+    cout.flush();
+
     // copy the spheres in array of floats
     // do it after we build the BVH as it would have moved the spheres around
-    float *floats = new float[scene_size];
+    float *floats = new float[scene_size_float];
     int idx = 0;
     i = 0;
     while (i < n) {
-        for (int j = 0; j < 10; j++, i++) {
+        for (int j = 0; j < lane_size_spheres; j++, i++) {
             floats[idx++] = spheres[i].center.x();
             floats[idx++] = spheres[i].center.y();
             floats[idx++] = spheres[i].center.z();
         }
-        idx += 2; // padding
+        idx += lane_padding_float; // padding
     }
-    assert(idx == scene_size);
+    assert(idx == scene_size_float);
 
-    checkCudaErrors(cudaMalloc((void **)&sc.spheres, scene_size * sizeof(float)));
-    checkCudaErrors(cudaMemcpy(sc.spheres, floats, scene_size * sizeof(float), cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMalloc((void **)&sc.spheres, scene_size_float * sizeof(float)));
+    checkCudaErrors(cudaMemcpy(sc.spheres, floats, scene_size_float * sizeof(float), cudaMemcpyHostToDevice));
 
     delete[] floats;
     delete[] spheres;
@@ -247,9 +254,9 @@ __device__ bool hit_bvh(const scene& sc, const ray& r, float t_min, float t_max,
         if (down) {
             if (hit_bbox(node, r, t_min, closest)) {
                 if (idx >= sc.count) { // leaf node
-                    int m = (idx - sc.count) * 32;
+                    int m = (idx - sc.count) * lane_size_float;
                     #pragma unroll
-                    for (int i = 0; i < 10; i++) {
+                    for (int i = 0; i < lane_size_spheres; i++) {
                         vec3 center(sc.spheres[m++], sc.spheres[m++], sc.spheres[m++]);
                         if (hit_sphere(center, r, t_min, closest, rec)) {
                             found = true;
