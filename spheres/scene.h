@@ -15,7 +15,7 @@
 
 using namespace std;
 
-const unsigned int lane_size_float = 32 / sizeof(float);
+const unsigned int lane_size_float = 128 / sizeof(float);
 const unsigned int lane_size_spheres = lane_size_float / 3;
 const unsigned int lane_padding_float = lane_size_float - lane_size_spheres * 3;
 
@@ -92,7 +92,7 @@ struct bvh_node {
     __device__ vec3 left() const { return a; }
     __device__ vec3 right() const { return b; }
 
-    __host__ __device__ vec3 size() const { return b - a; }
+    __host__ __device__ unsigned int split_axis() const { return max_component(b - a); }
 
     vec3 a;
     vec3 b;
@@ -146,8 +146,7 @@ void build_bvh(bvh_node *nodes, int idx, sphere *l, int n) {
     nodes[idx] = bvh_node(minof(l, n), maxof(l, n));
 
     if (n > lane_size_spheres) {
-        const vec3 size = nodes[idx].size();
-        const unsigned int axis = max_component(size);
+        const unsigned int axis = nodes[idx].split_axis();
         if (axis == 0)
             qsort(l, n, sizeof(sphere), box_x_compare);
         else if (axis == 1)
@@ -250,6 +249,13 @@ __device__ bool hit_bvh(const scene& sc, const ray& r, float t_min, float t_max,
     float closest = t_max;
     bvh_node node = sc.bvh[1];
 
+    // precompute move increments
+    int move_left[3], move_right[3];
+    for (unsigned int i = 0; i < 3; i++) {
+        move_left[i] = (r.direction()[i] >= 0) ? 0 : 1;
+        move_right[i] = (r.direction()[i] >= 0) ? 1 : -1;
+    }
+
     while (true) {
         if (down) {
             if (hit_bbox(node, r, t_min, closest)) {
@@ -267,7 +273,7 @@ __device__ bool hit_bvh(const scene& sc, const ray& r, float t_min, float t_max,
                 }
                 else {
                     // keep going down
-                    idx = idx * 2; // node = node.left
+                    idx = idx * 2 + move_left[node.split_axis()]; // node = node.left
                     node = sc.bvh[idx];
                 }
             }
@@ -278,14 +284,18 @@ __device__ bool hit_bvh(const scene& sc, const ray& r, float t_min, float t_max,
         else if (idx == 1) {
             break;
         }
-        else if ((idx % 2) == 0) { // node is left
-            idx++; // node = node.sibling
-            node = sc.bvh[idx];
-            down = true;
-        }
         else {
-            idx = idx / 2; // node = node.parent
-            node = sc.bvh[idx];
+            // let's read the parent again
+            node = sc.bvh[idx / 2];
+            if ((idx % 2) == move_left[node.split_axis()]) { // go to sibling
+                idx += move_right[node.split_axis()]; // node = node.sibling
+                node = sc.bvh[idx];
+                down = true;
+            }
+            else { // go up
+                idx = idx / 2; // node = node.parent
+                //node = sc.bvh[idx]; // we already read parent node
+            }
         }
     }
 
