@@ -21,7 +21,10 @@ __device__ vec3 color(const ray& r, const scene s, rand_state& rand_state) {
             const vec3 p = cur_ray.point_at_parameter(rec.t);
             vec3 target = rec.n + random_in_unit_sphere(rand_state);
             cur_ray = ray(p, target);
-            cur_attenuation *= vec3(.35f, .35f, .35f);
+            cur_attenuation *= vec3(.05f, .05f, .35f);
+        }
+        else if (i == 0) {
+            break; // black background
         }
         else {
             float t = 0.5f*(cur_ray.direction().y() + 1.0f);
