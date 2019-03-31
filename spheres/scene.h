@@ -258,10 +258,17 @@ __device__ bool hit_bvh(const scene& sc, const ray& r, float t_min, float t_max,
     bvh_node node = sc.bvh[1];
 
     // precompute move increments
-    __shared__ int move_left[ARRAY_SIZE*THREADBLOCK_SIZE];
+    __shared__ int move_left[3 * THREADBLOCK_SIZE]; // I can actually store all 3 moves in a single int
     for (unsigned int i = 0; i < 3; i++) {
         move_left[no_bank_conflict_index(thread_id, i)] = (r.direction()[i] >= 0) ? 0 : 1;
     }
+
+    //__shared__ int axis_stack[9 * THREADBLOCK_SIZE]; // 5120
+    //__shared__ int axis_stack[10 * THREADBLOCK_SIZE]; // 10240
+    //__shared__ int axis_stack[14 * THREADBLOCK_SIZE]; // 163840
+    //__shared__ int axis_stack[17 * THREADBLOCK_SIZE]; // 1310720
+    __shared__ int axis_stack[20 * THREADBLOCK_SIZE]; // 10485760
+    int lvl = 0;
 
     while (true) {
         if (down) {
@@ -279,9 +286,11 @@ __device__ bool hit_bvh(const scene& sc, const ray& r, float t_min, float t_max,
                     down = false;
                 }
                 else {
-                    // keep going down
+                    // current -> left
+                    axis_stack[no_bank_conflict_index(thread_id, lvl)] = node.split_axis();
                     idx = idx * 2 + move_left[no_bank_conflict_index(thread_id, node.split_axis())]; // node = node.left
                     node = sc.bvh[idx];
+                    lvl++;
                 }
             }
             else {
@@ -292,17 +301,17 @@ __device__ bool hit_bvh(const scene& sc, const ray& r, float t_min, float t_max,
             break;
         }
         else {
-            // let's read the parent again
-            node = sc.bvh[idx / 2];
-            const int left_idx = move_left[no_bank_conflict_index(thread_id, node.split_axis())];
-            if ((idx % 2) == left_idx) { // go to sibling
+            int split_axis = axis_stack[no_bank_conflict_index(thread_id, lvl - 1)];
+            const int left_idx = move_left[no_bank_conflict_index(thread_id, split_axis)];
+            if ((idx % 2) == left_idx) { // left -> right
                 idx += -2 * left_idx + 1; // node = node.sibling
                 node = sc.bvh[idx];
                 down = true;
             }
-            else { // go up
+            else { // right -> parent
+                lvl--;
                 idx = idx / 2; // node = node.parent
-                //node = sc.bvh[idx]; // we already read parent node
+                node = sc.bvh[idx];
             }
         }
     }
