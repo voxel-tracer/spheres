@@ -241,6 +241,22 @@ __device__ bool hit_bbox(const bvh_node& node, const ray& r, float t_min, float 
     return true;
 }
 
+__device__ __forceinline__ float get_left(const vec3& d, const int axis) {
+    if (axis == 0)
+        return (d.x() >= 0) ? 0 : 1;
+    else if (axis==1)
+        return (d.y() >= 0) ? 0 : 1;
+    return (d.z() >= 0) ? 0 : 1;
+}
+
+__device__ __forceinline__ float get_right(const vec3& d, const int axis) {
+    if (axis == 0)
+        return (d.x() >= 0) ? 1 : -1;
+    else if (axis == 1)
+        return (d.y() >= 0) ? 1 : -1;
+    return (d.z() >= 0) ? 1 : -1;
+}
+
 __device__ bool hit_bvh(const scene& sc, const ray& r, float t_min, float t_max, hit_record &rec) {
     
     bool down = true;
@@ -273,7 +289,7 @@ __device__ bool hit_bvh(const scene& sc, const ray& r, float t_min, float t_max,
                 }
                 else {
                     // keep going down
-                    idx = idx * 2 + ((r.direction()[node.split_axis()] >= 0) ? 0 : 1); // node = node.left
+                    idx = idx * 2 + get_left(r.direction(), node.split_axis()); // node = node.left
                     node = sc.bvh[idx];
                 }
             }
@@ -287,8 +303,8 @@ __device__ bool hit_bvh(const scene& sc, const ray& r, float t_min, float t_max,
         else {
             // let's read the parent again
             node = sc.bvh[idx / 2];
-            if ((idx % 2) == ((r.direction()[node.split_axis()] >= 0) ? 0 : 1)) { // go to sibling
-                idx += (r.direction()[node.split_axis()] >= 0) ? 1 : -1; // node = node.sibling
+            if ((idx % 2) == get_left(r.direction(), node.split_axis())) { // go to sibling
+                idx += get_right(r.direction(), node.split_axis()); // node = node.sibling
                 node = sc.bvh[idx];
                 down = true;
             }
