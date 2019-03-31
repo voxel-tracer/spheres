@@ -241,24 +241,16 @@ __device__ bool hit_bbox(const bvh_node& node, const ray& r, float t_min, float 
     return true;
 }
 
-__device__ __forceinline__ float get_left(const vec3& d, const int axis) {
-    if (axis == 0)
-        return (d.x() >= 0) ? 0 : 1;
-    else if (axis==1)
-        return (d.y() >= 0) ? 0 : 1;
-    return (d.z() >= 0) ? 0 : 1;
-}
+#define THREADBLOCK_SIZE 64
+#define ARRAY_SIZE  3
 
-__device__ __forceinline__ float get_right(const vec3& d, const int axis) {
-    if (axis == 0)
-        return (d.x() >= 0) ? 1 : -1;
-    else if (axis == 1)
-        return (d.y() >= 0) ? 1 : -1;
-    return (d.z() >= 0) ? 1 : -1;
+__device__ __forceinline__ int no_bank_conflict_index(int thread_id, int logical_index) {
+    return logical_index * THREADBLOCK_SIZE + thread_id;
 }
 
 __device__ bool hit_bvh(const scene& sc, const ray& r, float t_min, float t_max, hit_record &rec) {
-    
+    const int thread_id = threadIdx.y*blockDim.x + threadIdx.x;
+
     bool down = true;
     int idx = 1;
     bool found = false;
@@ -266,11 +258,10 @@ __device__ bool hit_bvh(const scene& sc, const ray& r, float t_min, float t_max,
     bvh_node node = sc.bvh[1];
 
     // precompute move increments
-    //int move_left[3], move_right[3];
-    //for (unsigned int i = 0; i < 3; i++) {
-    //    move_left[i] = (r.direction()[i] >= 0) ? 0 : 1;
-    //    move_right[i] = (r.direction()[i] >= 0) ? 1 : -1;
-    //}
+    __shared__ int move_left[ARRAY_SIZE*THREADBLOCK_SIZE];
+    for (unsigned int i = 0; i < 3; i++) {
+        move_left[no_bank_conflict_index(thread_id, i)] = (r.direction()[i] >= 0) ? 0 : 1;
+    }
 
     while (true) {
         if (down) {
@@ -289,7 +280,7 @@ __device__ bool hit_bvh(const scene& sc, const ray& r, float t_min, float t_max,
                 }
                 else {
                     // keep going down
-                    idx = idx * 2 + get_left(r.direction(), node.split_axis()); // node = node.left
+                    idx = idx * 2 + move_left[no_bank_conflict_index(thread_id, node.split_axis())]; // node = node.left
                     node = sc.bvh[idx];
                 }
             }
@@ -303,8 +294,9 @@ __device__ bool hit_bvh(const scene& sc, const ray& r, float t_min, float t_max,
         else {
             // let's read the parent again
             node = sc.bvh[idx / 2];
-            if ((idx % 2) == get_left(r.direction(), node.split_axis())) { // go to sibling
-                idx += get_right(r.direction(), node.split_axis()); // node = node.sibling
+            const int left_idx = move_left[no_bank_conflict_index(thread_id, node.split_axis())];
+            if ((idx % 2) == left_idx) { // go to sibling
+                idx += -2 * left_idx + 1; // node = node.sibling
                 node = sc.bvh[idx];
                 down = true;
             }
