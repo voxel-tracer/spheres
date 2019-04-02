@@ -241,13 +241,6 @@ __device__ bool hit_bbox(const bvh_node& node, const ray& r, float t_min, float 
     return true;
 }
 
-#define THREADBLOCK_SIZE 64
-#define ARRAY_SIZE  3
-
-__device__ __forceinline__ int no_bank_conflict_index(int thread_id, int logical_index) {
-    return logical_index * THREADBLOCK_SIZE + thread_id;
-}
-
 __device__ bool hit_bvh(const scene& sc, const ray& r, float t_min, float t_max, hit_record &rec) {
     const int thread_id = threadIdx.y*blockDim.x + threadIdx.x;
 
@@ -257,17 +250,7 @@ __device__ bool hit_bvh(const scene& sc, const ray& r, float t_min, float t_max,
     float closest = t_max;
     bvh_node node = sc.bvh[1];
 
-    // precompute move increments
-    __shared__ int move_left[3 * THREADBLOCK_SIZE]; // I can actually store all 3 moves in a single int
-    for (unsigned int i = 0; i < 3; i++) {
-        move_left[no_bank_conflict_index(thread_id, i)] = (r.direction()[i] >= 0) ? 0 : 1;
-    }
-
-    //__shared__ int axis_stack[9 * THREADBLOCK_SIZE]; // 5120
-    //__shared__ int axis_stack[10 * THREADBLOCK_SIZE]; // 10240
-    //__shared__ int axis_stack[14 * THREADBLOCK_SIZE]; // 163840
-    //__shared__ int axis_stack[17 * THREADBLOCK_SIZE]; // 1310720
-    __shared__ int axis_stack[20 * THREADBLOCK_SIZE]; // 10485760
+    unsigned int move_bit_stack = 0;
     int lvl = 0;
 
     while (true) {
@@ -287,8 +270,10 @@ __device__ bool hit_bvh(const scene& sc, const ray& r, float t_min, float t_max,
                 }
                 else {
                     // current -> left
-                    axis_stack[no_bank_conflict_index(thread_id, lvl)] = node.split_axis();
-                    idx = idx * 2 + move_left[no_bank_conflict_index(thread_id, node.split_axis())]; // node = node.left
+                    const int move_left = signbit(r.direction()[node.split_axis()]);
+                    move_bit_stack &= ~(1 << lvl); // clear previous bit
+                    move_bit_stack |= move_left << lvl;
+                    idx = idx * 2 + move_left;
                     node = sc.bvh[idx];
                     lvl++;
                 }
@@ -301,8 +286,8 @@ __device__ bool hit_bvh(const scene& sc, const ray& r, float t_min, float t_max,
             break;
         }
         else {
-            int split_axis = axis_stack[no_bank_conflict_index(thread_id, lvl - 1)];
-            const int left_idx = move_left[no_bank_conflict_index(thread_id, split_axis)];
+            const int move_left = (move_bit_stack >> (lvl - 1)) & 1;
+            const int left_idx = move_left;
             if ((idx % 2) == left_idx) { // left -> right
                 idx += -2 * left_idx + 1; // node = node.sibling
                 node = sc.bvh[idx];
