@@ -10,7 +10,7 @@
 #include <string>
 #include <time.h>
 
-#undef NDEBUG
+//#undef NDEBUG
 #include <cassert>
 
 using namespace std;
@@ -102,6 +102,8 @@ struct scene {
     float* spheres;
     bvh_node* bvh;
     int count;
+
+    unsigned int *counters;
 };
 
 unsigned int g_state = 0;
@@ -220,6 +222,9 @@ void setup_scene(const char *input, scene &sc) {
     checkCudaErrors(cudaMalloc((void **)&sc.spheres, scene_size_float * sizeof(float)));
     checkCudaErrors(cudaMemcpy(sc.spheres, floats, scene_size_float * sizeof(float), cudaMemcpyHostToDevice));
 
+    checkCudaErrors(cudaMalloc((void **)&sc.counters, 32 * sizeof(long)));
+    checkCudaErrors(cudaMemset(sc.counters, 0, 32 * sizeof(long)));
+
     delete[] floats;
     delete[] spheres;
 }
@@ -241,8 +246,23 @@ __device__ bool hit_bbox(const bvh_node& node, const ray& r, float t_min, float 
     return true;
 }
 
+void releaseScene(scene& sc) {
+    unsigned int h_counters[32];
+    unsigned long total = 0;
+    checkCudaErrors(cudaMemcpy(h_counters, sc.counters, 32 * sizeof(unsigned int), cudaMemcpyDeviceToHost));
+    cout << "counters collected per level:" << endl;
+    for (size_t i = 0; i < 32; i++) {
+        cout << " " << i << ": " << h_counters[i] << endl;
+        total += h_counters[i];
+    }
+    cout << endl << "total " << total << endl;
+    
+
+    checkCudaErrors(cudaFree(sc.counters));
+    checkCudaErrors(cudaFree(sc.bvh));
+}
+
 __device__ bool hit_bvh(const scene& sc, const ray& r, float t_min, float t_max, hit_record &rec) {
-    const int thread_id = threadIdx.y*blockDim.x + threadIdx.x;
 
     bool down = true;
     int idx = 1;
@@ -253,10 +273,14 @@ __device__ bool hit_bvh(const scene& sc, const ray& r, float t_min, float t_max,
     unsigned int move_bit_stack = 0;
     int lvl = 0;
 
+    atomicAdd(sc.counters, 1); // count how many rays reached this method
+    atomicAdd(sc.counters + lvl + 1, 1);
+
     while (true) {
         if (down) {
             if (hit_bbox(node, r, t_min, closest)) {
                 if (idx >= sc.count) { // leaf node
+                    atomicAdd(sc.counters + lvl + 2, 1);
                     int m = (idx - sc.count) * lane_size_float;
                     #pragma unroll
                     for (int i = 0; i < lane_size_spheres; i++) {
@@ -276,6 +300,7 @@ __device__ bool hit_bvh(const scene& sc, const ray& r, float t_min, float t_max,
                     idx = idx * 2 + move_left;
                     node = sc.bvh[idx];
                     lvl++;
+                    atomicAdd(sc.counters + lvl + 1, 1);
                 }
             }
             else {
@@ -291,12 +316,14 @@ __device__ bool hit_bvh(const scene& sc, const ray& r, float t_min, float t_max,
             if ((idx % 2) == left_idx) { // left -> right
                 idx += -2 * left_idx + 1; // node = node.sibling
                 node = sc.bvh[idx];
+                atomicAdd(sc.counters + lvl + 1, 1);
                 down = true;
             }
             else { // right -> parent
                 lvl--;
                 idx = idx / 2; // node = node.parent
                 node = sc.bvh[idx];
+                atomicAdd(sc.counters + lvl + 1, 1);
             }
         }
     }

@@ -163,10 +163,10 @@ int main(int argc, char** argv) {
     h_fb = NULL;
 
     // clean up
+    releaseScene(sc);
     checkCudaErrors(cudaDeviceSynchronize());
     checkCudaErrors(cudaGetLastError());
     checkCudaErrors(cudaFree(d_fb));
-    checkCudaErrors(cudaFree(sc.bvh));
 
     cudaDeviceReset();
 }
