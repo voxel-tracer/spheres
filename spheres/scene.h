@@ -100,6 +100,9 @@ struct bvh_node {
     vec3 b;
 };
 
+// step 1: allocate memory for the constant part
+__device__ __constant__ bvh_node d_nodes[2048];
+
 struct scene {
     float* spheres;
     bvh_node* bvh;
@@ -171,19 +174,28 @@ void build_bvh(sphere *l, int n, scene& sc) {
     start = clock();
 
     sc.count = n / lane_size_spheres;
-    cout << " of size " << 2 * sc.count;
+    cout << " of size " << 2 * sc.count << endl;
     bvh_node* nodes = new bvh_node[2 * sc.count];
     build_bvh(nodes, 1, l, n);
-
-    // copy bvh to device
-    int bvh_size = 2 * sc.count * sizeof(bvh_node);
-    cout << " uses " << bvh_size << " bytes...";
 
     stop = clock();
     cout << "done in " << ((double)(stop - start)) / CLOCKS_PER_SEC << "s" << endl;
 
-    checkCudaErrors(cudaMalloc((void **)&sc.bvh, bvh_size));
-    checkCudaErrors(cudaMemcpy(sc.bvh, nodes, bvh_size, cudaMemcpyHostToDevice));
+    // once we build the tree, copy the first 2048 nodes to constant memory
+    const int const_size = min(2048, 2 * sc.count);
+    checkCudaErrors(cudaMemcpyToSymbol(d_nodes, nodes, const_size * sizeof(bvh_node)));
+    cout << "copied " << const_size << " nodes to constant memory." << endl;
+
+    // copy remaining nodes to global memory
+    int bvh_size = 2 * sc.count - const_size;
+    if (bvh_size > 0) {
+        checkCudaErrors(cudaMalloc((void **)&sc.bvh, bvh_size * sizeof(bvh_node)));
+        checkCudaErrors(cudaMemcpy(sc.bvh, nodes + const_size, bvh_size * sizeof(bvh_node), cudaMemcpyHostToDevice));
+        cout << "copied " << bvh_size << " nodes to global memory." << endl;
+    }
+    else {
+        sc.bvh = NULL;
+    }
 
     delete[] nodes;
 }
@@ -267,7 +279,9 @@ void releaseScene(scene& sc) {
 
     checkCudaErrors(cudaFree(sc.counters));
 #endif
-    checkCudaErrors(cudaFree(sc.bvh));
+    if (sc.bvh != NULL) {
+        checkCudaErrors(cudaFree(sc.bvh));
+    }
 }
 
 __device__ bool hit_bvh(const scene& sc, const ray& r, float t_min, float t_max, hit_record &rec) {
@@ -286,7 +300,7 @@ __device__ bool hit_bvh(const scene& sc, const ray& r, float t_min, float t_max,
 
     while (true) {
         if (down) {
-            bvh_node node = sc.bvh[idx];
+            bvh_node node = (idx < 2048) ? d_nodes[idx] : sc.bvh[idx - 2048];
 #ifdef COUNT_BVH
             atomicAdd(sc.counters + lvl + 1, 1);
 #endif
