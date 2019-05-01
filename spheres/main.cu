@@ -103,7 +103,7 @@ int cmpfunc(const void * a, const void * b) {
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        cerr << "usage spheres file_name [num_samples=1] [num_runs=1] [camera_dist=100]";
+        cerr << "usage spheres file_name [num_samples=1] [num_runs=1] [camera_dist=100] [binary]";
         exit(-1);
     }
     const char* input = argv[1];
@@ -114,6 +114,7 @@ int main(int argc, char** argv) {
     const int ty = 8;
     const int nr = (argc > 3) ? strtol(argv[3], NULL, 10) : 1;
     const int dist = (argc > 4) ? strtof(argv[4], NULL) : 100;
+    const int csv = (argc > 5) ? strcmp(argv[5], "binary") : true;
     
     cerr << "Rendering a " << nx << "x" << ny << " image with " << ns << " samples per pixel ";
     cerr << "in " << tx << "x" << ty << " blocks.\n";
@@ -127,7 +128,7 @@ int main(int argc, char** argv) {
 
     // setup scene
     scene sc;
-    setup_scene(input, sc);
+    setup_scene(input, sc, csv);
 
     camera cam = setup_camera(nx, ny, dist);
 

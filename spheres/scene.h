@@ -168,26 +168,83 @@ void build_bvh(bvh_node *nodes, int idx, sphere *l, int n) {
     }
 }
 
-void build_bvh(sphere *l, int n, scene& sc) {
+bvh_node* build_bvh(sphere *l, int n, int &count) {
     cout << " building BVH...";
     clock_t start, stop;
     start = clock();
 
-    sc.count = n / lane_size_spheres;
-    cout << " of size " << 2 * sc.count << endl;
-    bvh_node* nodes = new bvh_node[2 * sc.count];
+    count = n / lane_size_spheres;
+    cout << " of size " << 2 * count << endl;
+    bvh_node* nodes = new bvh_node[2 * count];
     build_bvh(nodes, 1, l, n);
 
     stop = clock();
     cout << "done in " << ((double)(stop - start)) / CLOCKS_PER_SEC << "s" << endl;
 
+    return nodes;
+}
+
+void store_to_binary(const char *output, const bvh_node *nodes, const sphere *spheres, int num_spheres, int num_nodes) {
+    cout << "Saving scene to binary file" << endl;
+    fstream out(output, ios::out | ios::binary);
+    out.write((char*)&num_spheres, sizeof(num_spheres));
+    out.write((char*)spheres, sizeof(sphere)*num_spheres);
+    out.write((char*)&num_nodes, sizeof(num_nodes));
+    out.write((char*)nodes, sizeof(bvh_node)*num_nodes);
+    out.close();
+}
+
+void load_from_binary(const char *input, sphere **spheres, bvh_node **nodes, int &num_spheres, int &num_nodes) {
+    cout << "Loading scene from disk";
+    fstream in(input, ios::in | ios::binary);
+    in.read((char*)&num_spheres, sizeof(num_spheres));
+    *spheres = new sphere[num_spheres];
+    in.read((char*)(*spheres), sizeof(sphere)*num_spheres);
+
+    in.read((char*)&num_nodes, sizeof(num_nodes));
+    *nodes = new bvh_node[num_nodes];
+    in.read((char*)(*nodes), sizeof(bvh_node)*num_nodes);
+    cout << ", loaded " << num_spheres << " spheres, and " << num_nodes << " bvh nodes" << endl;
+}
+
+void load_from_csv(const char *input, sphere **spheres, bvh_node **nodes, int &num_spheres, int &num_nodes) {
+    cout << "Loading spheres from disk";
+    vector<vector<float>> data = parse2DCsvFile(input);
+    num_spheres = data.size();
+    cout << ", loaded " << num_spheres << " spheres" << endl;
+    *spheres = new sphere[num_spheres];
+    int i = 0;
+    for (auto l : data) {
+        vec3 center(l[2], l[3], l[4]);
+        (*spheres)[i++] = sphere(center);
+    }
+
+    int half_num_nodes;
+    *nodes = build_bvh(*spheres, num_spheres, half_num_nodes);
+    num_nodes = half_num_nodes * 2;
+}
+
+void setup_scene(const char *input, scene &sc, bool csv) {
+    int num_spheres, num_nodes;
+    bvh_node *nodes;
+    sphere *spheres;
+
+    if (csv) {
+        load_from_csv(input, &spheres, &nodes, num_spheres, num_nodes);
+        store_to_binary((std::string(input) + ".bin").c_str(), nodes, spheres, num_spheres, num_nodes);
+    }
+    else {
+        load_from_binary((std::string(input) + ".bin").c_str(), &spheres, &nodes, num_spheres, num_nodes);
+    }
+    sc.count = num_nodes / 2;
+
     // once we build the tree, copy the first 2048 nodes to constant memory
-    const int const_size = min(2048, 2 * sc.count);
+    const int const_size = min(2048, num_nodes);
     checkCudaErrors(cudaMemcpyToSymbol(d_nodes, nodes, const_size * sizeof(bvh_node)));
     cout << "copied " << const_size << " nodes to constant memory." << endl;
 
     // copy remaining nodes to global memory
-    int bvh_size = 2 * sc.count - const_size;
+    int bvh_size = num_nodes - const_size;
     if (bvh_size > 0) {
         checkCudaErrors(cudaMalloc((void **)&sc.bvh, bvh_size * sizeof(bvh_node)));
         checkCudaErrors(cudaMemcpy(sc.bvh, nodes + const_size, bvh_size * sizeof(bvh_node), cudaMemcpyHostToDevice));
@@ -198,34 +255,18 @@ void build_bvh(sphere *l, int n, scene& sc) {
     }
 
     delete[] nodes;
-}
-
-void setup_scene(const char *input, scene &sc) {
-    cout << "Loading spheres from disk";
-    vector<vector<float>> data = parse2DCsvFile(input);
-    int n = data.size();
-    cout << ", loaded " << n << " spheres";
-    sphere* spheres = new sphere[n];
-    int i = 0;
-    for (auto l : data) {
-        vec3 center(l[2], l[3], l[4]);
-        spheres[i++] = sphere(center);
-    }
-    
-    const int scene_size_float = lane_size_float * (n / lane_size_spheres);
-    cout << ", uses " << (scene_size_float * sizeof(float)) << " bytes" << endl;
-
-    build_bvh(spheres, n, sc);
 
     cout << "copying spheres to device" << endl;
     cout.flush();
+
+    const int scene_size_float = lane_size_float * (num_spheres / lane_size_spheres);
 
     // copy the spheres in array of floats
     // do it after we build the BVH as it would have moved the spheres around
     float *floats = new float[scene_size_float];
     int idx = 0;
-    i = 0;
-    while (i < n) {
+    int i = 0;
+    while (i < num_spheres) {
         for (int j = 0; j < lane_size_spheres; j++, i++) {
             floats[idx++] = spheres[i].center.x();
             floats[idx++] = spheres[i].center.y();
