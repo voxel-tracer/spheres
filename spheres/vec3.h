@@ -141,8 +141,9 @@ __host__ __device__ inline vec3& vec3::operator/=(const float t) {
 }
 
 __host__ __device__ inline vec3 unit_vector(const vec3 v) {
-    float invLen = rsqrtf(dot(v, v));
-    return v * invLen;
+    //float invLen = rsqrtf(dot(v, v));
+    //return v * invLen;
+    return v / sqrt(dot(v, v));
 }
 
 __host__ __device__ inline unsigned int min_component(const vec3 v) {

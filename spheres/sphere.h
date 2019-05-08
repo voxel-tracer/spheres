@@ -20,19 +20,19 @@ struct sphere  {
 
 __device__ bool hit_sphere(const vec3& center, const ray& r, float t_min, float t_max, hit_record& rec) {
     vec3 oc = r.origin() - center;
-    float a = dot(r.direction(), r.direction());
     float b = dot(oc, r.direction());
     float c = dot(oc, oc) - 1;
-    float discriminant = b*b - a*c;
+    float discriminant = b*b - c;
     if (discriminant > 0) {
-        float temp = (-b - sqrt(discriminant))/a;
+        const float dsqrt = sqrt(discriminant);
+        float temp = -b - dsqrt;
         if (temp < t_max && temp > t_min) {
             rec.t = temp;
             vec3 p = r.point_at_parameter(temp);
             rec.n = p - center;
             return true;
         }
-        temp = (-b + sqrt(discriminant)) / a;
+        temp = -b + dsqrt;
         if (temp < t_max && temp > t_min) {
             rec.t = temp;
             vec3 p = r.point_at_parameter(temp);
