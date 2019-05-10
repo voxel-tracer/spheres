@@ -210,13 +210,18 @@ void load_from_binary(const char *input, sphere **spheres, bvh_node **nodes, int
 void load_from_csv(const char *input, sphere **spheres, bvh_node **nodes, int &num_spheres, int &num_nodes) {
     cout << "Loading spheres from disk";
     vector<vector<float>> data = parse2DCsvFile(input);
-    num_spheres = data.size();
+    // make sure we only load N such that (N/lane_size_spheres) is a multiple of 2
+    int size = data.size();
+    size /= 10;
+    num_spheres = powf(2, (int)(log2f((float)size))) * 10;
     cout << ", loaded " << num_spheres << " spheres" << endl;
     *spheres = new sphere[num_spheres];
     int i = 0;
     for (auto l : data) {
         vec3 center(l[2], l[3], l[4]);
         (*spheres)[i++] = sphere(center);
+        if (i == num_spheres)
+            break;
     }
 
     int half_num_nodes;
