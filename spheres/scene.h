@@ -354,7 +354,7 @@ __device__ bool hit_bvh(const scene& sc, const ray& r, float t_min, float t_max,
                     #pragma unroll
                     for (int i = 0; i < lane_size_spheres; i++) {
                         vec3 center(sc.spheres[m++], sc.spheres[m++], sc.spheres[m++]);
-                        if (hit_sphere(center, r, t_min, closest, rec)) {
+                        if (hit_point(center, r, t_min, closest, rec)) {
                             found = true;
                             closest = rec.t;
                         }

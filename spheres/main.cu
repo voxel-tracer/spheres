@@ -13,6 +13,8 @@
 // limited-depth loop instead.  Later code in the book limits to a max
 // depth of 50, so we adapt this a few chapters early on the GPU.
 __device__ vec3 color(const ray& r, const scene s, rand_state& rand_state) {
+    const float dist = 2500;
+    const light light_source(vec3(2 * dist, 0, 0), 1000, vec3(100, 100, 100));
     ray cur_ray = r;
     vec3 cur_attenuation = vec3(1, 1, 1);
     for (int i = 0; i < 50; i++) {
@@ -26,7 +28,11 @@ __device__ vec3 color(const ray& r, const scene s, rand_state& rand_state) {
         else if (i == 0) {
             break; // black background
         }
+        else if (hit_light(light_source, cur_ray, 0.001f, FLT_MAX)) {
+            return cur_attenuation * light_source.emission;
+        }
         else {
+            
             float t = 0.5f*(cur_ray.direction().y() + 1.0f);
             vec3 c = (1.0f - t)*vec3(1.0, 1.0, 1.0) + t * vec3(0.5, 0.7, 1.0);
             return cur_attenuation * c;
