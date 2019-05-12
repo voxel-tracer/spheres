@@ -218,12 +218,22 @@ void load_from_csv(const char *input, sphere **spheres, bvh_node **nodes, int &n
     num_spheres = powf(2, (int)(log2f((float)size))) * 10;
     cout << ", loaded " << num_spheres << " spheres" << endl;
     *spheres = new sphere[num_spheres];
+    int max_gen = 0;
     int i = 0;
     for (auto l : data) {
-        vec3 center(l[2], l[3], l[4]);
-        (*spheres)[i++] = sphere(center);
+        int parent = (int)l[1];
+        int gen = 1 + (parent > 0 ? (*spheres)[parent - 1].color : 0);
+        max_gen = max(gen, max_gen);
+        (*spheres)[i++] = sphere(vec3(l[2], l[3], l[4]), gen);
         if (i == num_spheres)
             break;
+    }
+
+    // normalize color idx such that max_gen = 256
+    float normalizer = 255.0f / max_gen;
+    for (int i = 0; i < num_spheres; i++) {
+        int gen = (*spheres)[i].color;
+        (*spheres)[i].color = (int) (gen * normalizer);
     }
 
     int half_num_nodes;
