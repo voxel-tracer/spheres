@@ -102,11 +102,13 @@ struct bvh_node {
 
 // step 1: allocate memory for the constant part
 __device__ __constant__ bvh_node d_nodes[2048];
+__device__ __constant__ float d_colormap[256 * 3];
 
 struct scene {
     float* spheres;
     bvh_node* bvh;
     int count;
+    int *colors;
 
 #ifdef COUNT_BVH
     unsigned int *counters;
@@ -229,7 +231,7 @@ void load_from_csv(const char *input, sphere **spheres, bvh_node **nodes, int &n
     num_nodes = half_num_nodes * 2;
 }
 
-void setup_scene(const char *input, scene &sc, bool csv) {
+void setup_scene(const char *input, scene &sc, bool csv, float *colormap) {
     int num_spheres, num_nodes;
     bvh_node *nodes;
     sphere *spheres;
@@ -246,6 +248,7 @@ void setup_scene(const char *input, scene &sc, bool csv) {
     // once we build the tree, copy the first 2048 nodes to constant memory
     const int const_size = min(2048, num_nodes);
     checkCudaErrors(cudaMemcpyToSymbol(d_nodes, nodes, const_size * sizeof(bvh_node)));
+    checkCudaErrors(cudaMemcpyToSymbol(d_colormap, colormap, 256 * 3 * sizeof(float)));
     cout << "copied " << const_size << " nodes to constant memory." << endl;
 
     // copy remaining nodes to global memory
@@ -269,6 +272,7 @@ void setup_scene(const char *input, scene &sc, bool csv) {
     // copy the spheres in array of floats
     // do it after we build the BVH as it would have moved the spheres around
     float *floats = new float[scene_size_float];
+    int *colors = new int[num_spheres];
     int idx = 0;
     int i = 0;
     while (i < num_spheres) {
@@ -276,12 +280,15 @@ void setup_scene(const char *input, scene &sc, bool csv) {
             floats[idx++] = spheres[i].center.x();
             floats[idx++] = spheres[i].center.y();
             floats[idx++] = spheres[i].center.z();
+            colors[i] = spheres[i].color;
         }
         idx += lane_padding_float; // padding
     }
     assert(idx == scene_size_float);
 
+    checkCudaErrors(cudaMalloc((void **)&sc.colors, num_spheres * sizeof(int)));
     checkCudaErrors(cudaMalloc((void **)&sc.spheres, scene_size_float * sizeof(float)));
+    checkCudaErrors(cudaMemcpy(sc.colors, colors, num_spheres * sizeof(int), cudaMemcpyHostToDevice));
     checkCudaErrors(cudaMemcpy(sc.spheres, floats, scene_size_float * sizeof(float), cudaMemcpyHostToDevice));
 
 #ifdef COUNT_BVH
@@ -291,6 +298,7 @@ void setup_scene(const char *input, scene &sc, bool csv) {
 
     delete[] floats;
     delete[] spheres;
+    delete[] colors;
 }
 
 __device__ bool hit_bbox(const bvh_node& node, const ray& r, float t_min, float t_max) {
@@ -328,6 +336,8 @@ void releaseScene(scene& sc) {
     if (sc.bvh != NULL) {
         checkCudaErrors(cudaFree(sc.bvh));
     }
+    checkCudaErrors(cudaFree(sc.spheres));
+    checkCudaErrors(cudaFree(sc.colors));
 }
 
 __device__ bool hit_bvh(const scene& sc, const ray& r, float t_min, float t_max, hit_record &rec) {
@@ -362,6 +372,7 @@ __device__ bool hit_bvh(const scene& sc, const ray& r, float t_min, float t_max,
                         if (hit_point(center, r, t_min, closest, rec)) {
                             found = true;
                             closest = rec.t;
+                            rec.idx = (idx - sc.count)*lane_size_spheres + i;
                         }
                     }
                     down = false;

@@ -7,15 +7,17 @@ struct hit_record
 {
     float t;
     vec3 n;
+    int idx;
 };
 
 struct sphere  {
         sphere() {}
-        sphere(vec3 cen) : center(cen) {};
+        sphere(vec3 cen, int clr) : center(cen), color(clr) {};
 
         __device__ vec3 normal(const vec3& p) const { return p - center; }
 
         vec3 center;
+        int color;
 };
 
 struct light {
