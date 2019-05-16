@@ -37,9 +37,7 @@ __device__ vec3 random_in_unit_sphere(rand_state& state) {
     float r = sqrtf(fmaxf(0.0, 1.0f - z * z));
     float c, s;
     sincosf(t, &s, &c);
-    vec3 res = vec3(r*c, r*s, z);
-    res *= cbrtf(random_float(state));
-    return res;
+    return vec3(r*c, r*s, z);
 }
 
 /*
