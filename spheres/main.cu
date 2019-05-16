@@ -314,11 +314,7 @@ __global__ void render(vec3 *fb, const scene sc, int max_x, int max_y, int ns, c
         ray r = cam.get_ray(u, v, state);
         col += color(r, sc, state);
     }
-    col /= float(ns);
-    col[0] = sqrt(col[0]);
-    col[1] = sqrt(col[1]);
-    col[2] = sqrt(col[2]);
-    fb[pixel_index] = col;
+    fb[pixel_index] = col / float(ns);
 }
 
 float rand(unsigned int &state) {
@@ -343,15 +339,24 @@ camera setup_camera(int nx, int ny, float dist) {
         dist_to_focus);
 }
 
+// http://chilliant.blogspot.com.au/2012/08/srgb-approximations-for-hlsl.html
+static uint32_t LinearToSRGB(float x)
+{
+    x = max(x, 0.0f);
+    x = max(1.055f * powf(x, 0.416666667f) - 0.055f, 0.0f);
+    uint32_t u = min((uint32_t)(x * 255.9f), 255u);
+    return u;
+}
+
 void write_image(const char* output_file, const vec3 *fb, const int nx, const int ny) {
     char *data = new char[nx * ny * 3];
     int idx = 0;
     for (int j = ny - 1; j >= 0; j--) {
         for (int i = 0; i < nx; i++) {
             size_t pixel_index = j * nx + i;
-            data[idx++] = int(255.99*fminf(fb[pixel_index].r(), 1.0f));
-            data[idx++] = int(255.99*fminf(fb[pixel_index].g(), 1.0f));
-            data[idx++] = int(255.99*fminf(fb[pixel_index].b(), 1.0f));
+            data[idx++] = LinearToSRGB(fb[pixel_index].r());
+            data[idx++] = LinearToSRGB(fb[pixel_index].g());
+            data[idx++] = LinearToSRGB(fb[pixel_index].b());
         }
     }
     stbi_write_png(output_file, nx, ny, 3, (void*)data, nx * 3);
