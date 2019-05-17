@@ -271,11 +271,16 @@ float _viridis_data[256*3] = {
 // limited-depth loop instead.  Later code in the book limits to a max
 // depth of 50, so we adapt this a few chapters early on the GPU.
 __device__ vec3 color(const ray& r, const scene s, rand_state& rand_state) {
-    const float dist = 2500;
-    const light light_source(vec3(2 * dist, 0, 0), 1000, vec3(100, 100, 100));
+    vec3 light_center(5000, 0, 0);
+    float light_radius = 1000;
+    float light_emissive = 100;
+    float sky_emissive = .2f;
+    int max_bounces = 50;
+
     ray cur_ray = r;
-    vec3 cur_attenuation = vec3(1, 1, 1);
-    for (int i = 0; i < 50; i++) {
+    vec3 attenuation = vec3(1, 1, 1);
+    vec3 incoming = vec3(0, 0, 0);
+    for (int i = 0; i < max_bounces; i++) {
         hit_record rec;
         if (hit_bvh(s, cur_ray, 0.001f, FLT_MAX, rec)) {
             const vec3 p = cur_ray.point_at_parameter(rec.t);
@@ -283,19 +288,18 @@ __device__ vec3 color(const ray& r, const scene s, rand_state& rand_state) {
 
             int clr_idx = s.colors[rec.idx] * 3;
             vec3 albedo = vec3(d_colormap[clr_idx++], d_colormap[clr_idx++], d_colormap[clr_idx++]);
-            cur_attenuation *= albedo;
 
             // explicit light sampling
 
             // create a random direction towards sphere
             
             // coord system for sampling: sw, su, sv
-            vec3 sw = unit_vector(light_source.center - p);
+            vec3 sw = unit_vector(light_center - p);
             vec3 su = unit_vector(cross(fabs(sw.x()) > 0.01f ? vec3(0, 1, 0) : vec3(1, 0, 0), sw));
             vec3 sv = cross(sw, su);
             
             // sample sphere by solid angle
-            float cosAMax = sqrtf(1.0f - light_source.radius*light_source.radius / (p - light_source.center).squared_length());
+            float cosAMax = sqrtf(1.0f - light_radius * light_radius / (p - light_center).squared_length());
             float eps1 = random_float(rand_state), eps2 = random_float(rand_state);
             float cosA = 1.0f - eps1 + eps1 * cosAMax;
             float sinA = sqrtf(1.0f - cosA * cosA);
@@ -308,19 +312,20 @@ __device__ vec3 color(const ray& r, const scene s, rand_state& rand_state) {
 
                 vec3 rdir = cur_ray.direction();
                 vec3 nl = dot(rec.n, rdir) < 0 ? rec.n : -rec.n;
-                cur_attenuation += (albedo * light_source.emission) * (fmaxf(0.0f, dot(l, nl)) * omega / kPI);
+                incoming += attenuation * (albedo * light_emissive) * (fmaxf(0.0f, dot(l, nl)) * omega / kPI);
             }
 
+            attenuation *= albedo;
             cur_ray = ray(p, target);
         }
-        else if (i == 0) {
+        else if (i == 0) { // primary ray didn't hit anything
             break; // black background
         }
         else {
-            return cur_attenuation * vec3(.4, .4, .4);
+            return incoming + attenuation * sky_emissive;
         }
     }
-    return vec3(0.0, 0.0, 0.0); // exceeded recursion
+    return incoming; // exceeded recursion
 }
 
 __global__ void render(vec3 *fb, const scene sc, int max_x, int max_y, int ns, const camera cam) {
