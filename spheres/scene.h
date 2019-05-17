@@ -419,3 +419,61 @@ __device__ bool hit_bvh(const scene& sc, const ray& r, float t_min, float t_max,
 
     return found;
 }
+
+
+__device__ bool shadow_bvh(const scene& sc, const ray& r, float t_min, float t_max) {
+
+    bool down = true;
+    int idx = 1;
+
+    unsigned int move_bit_stack = 0;
+    int lvl = 0;
+
+    while (true) {
+        if (down) {
+            bvh_node node = (idx < 2048) ? d_nodes[idx] : sc.bvh[idx - 2048];
+            if (hit_bbox(node, r, t_min, t_max)) {
+                if (idx >= sc.count) { // leaf node
+                    int m = (idx - sc.count) * lane_size_float;
+#pragma unroll
+                    for (int i = 0; i < lane_size_spheres; i++) {
+                        vec3 center(sc.spheres[m++], sc.spheres[m++], sc.spheres[m++]);
+                        hit_record rec;
+                        if (hit_point(center, r, t_min, t_max, rec)) {
+                            return true;
+                        }
+                    }
+                    down = false;
+                }
+                else {
+                    // current -> left
+                    const int move_left = signbit(r.direction()[node.split_axis()]);
+                    move_bit_stack &= ~(1 << lvl); // clear previous bit
+                    move_bit_stack |= move_left << lvl;
+                    idx = idx * 2 + move_left;
+                    lvl++;
+                }
+            }
+            else {
+                down = false;
+            }
+        }
+        else if (idx == 1) {
+            break;
+        }
+        else {
+            const int move_left = (move_bit_stack >> (lvl - 1)) & 1;
+            const int left_idx = move_left;
+            if ((idx % 2) == left_idx) { // left -> right
+                idx += -2 * left_idx + 1; // node = node.sibling
+                down = true;
+            }
+            else { // right -> parent
+                lvl--;
+                idx = idx / 2; // node = node.parent
+            }
+        }
+    }
+
+    return false;
+}

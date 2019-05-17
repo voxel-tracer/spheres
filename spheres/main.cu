@@ -303,7 +303,7 @@ __device__ vec3 color(const ray& r, const scene s, rand_state& rand_state) {
             vec3 l = unit_vector(su * cosf(phi) * sinA + sv * sin(phi) * sinA + sw * cosA);
 
             // shoot shadow ray
-            if (!hit_bvh(s, ray(p, l), 0.001f, FLT_MAX, rec)) {
+            if (!shadow_bvh(s, ray(p, l), 0.001f, FLT_MAX)) {
                 float omega = 2 * kPI * (1 - cosAMax);
 
                 vec3 rdir = cur_ray.direction();
