@@ -280,21 +280,43 @@ __device__ vec3 color(const ray& r, const scene s, rand_state& rand_state) {
         if (hit_bvh(s, cur_ray, 0.001f, FLT_MAX, rec)) {
             const vec3 p = cur_ray.point_at_parameter(rec.t);
             vec3 target = rec.n + random_in_unit_sphere(rand_state);
-            cur_ray = ray(p, target);
 
             int clr_idx = s.colors[rec.idx] * 3;
-            cur_attenuation *= vec3(d_colormap[clr_idx++], d_colormap[clr_idx++], d_colormap[clr_idx++]);
+            vec3 albedo = vec3(d_colormap[clr_idx++], d_colormap[clr_idx++], d_colormap[clr_idx++]);
+            cur_attenuation *= albedo;
+
+            // explicit light sampling
+
+            // create a random direction towards sphere
+            
+            // coord system for sampling: sw, su, sv
+            vec3 sw = unit_vector(light_source.center - p);
+            vec3 su = unit_vector(cross(fabs(sw.x()) > 0.01f ? vec3(0, 1, 0) : vec3(1, 0, 0), sw));
+            vec3 sv = cross(sw, su);
+            
+            // sample sphere by solid angle
+            float cosAMax = sqrtf(1.0f - light_source.radius*light_source.radius / (p - light_source.center).squared_length());
+            float eps1 = random_float(rand_state), eps2 = random_float(rand_state);
+            float cosA = 1.0f - eps1 + eps1 * cosAMax;
+            float sinA = sqrtf(1.0f - cosA * cosA);
+            float phi = 2 * kPI * eps2;
+            vec3 l = unit_vector(su * cosf(phi) * sinA + sv * sin(phi) * sinA + sw * cosA);
+
+            // shoot shadow ray
+            if (!hit_bvh(s, ray(p, l), 0.001f, FLT_MAX, rec)) {
+                float omega = 2 * kPI * (1 - cosAMax);
+
+                vec3 rdir = cur_ray.direction();
+                vec3 nl = dot(rec.n, rdir) < 0 ? rec.n : -rec.n;
+                cur_attenuation += (albedo * light_source.emission) * (fmaxf(0.0f, dot(l, nl)) * omega / kPI);
+            }
+
+            cur_ray = ray(p, target);
         }
         else if (i == 0) {
             break; // black background
         }
-        else if (hit_light(light_source, cur_ray, 0.001f, FLT_MAX)) {
-            return cur_attenuation * light_source.emission;
-        }
         else {
-            //float t = 0.5f*(cur_ray.direction().y() + 1.0f);
-            //vec3 c = (1.0f - t)*vec3(1.0, 1.0, 1.0) + t * vec3(0.5, 0.7, 1.0);
-            //return cur_attenuation * c;
             return cur_attenuation * vec3(.4, .4, .4);
         }
     }
