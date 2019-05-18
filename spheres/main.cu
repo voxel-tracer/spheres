@@ -274,8 +274,8 @@ float _viridis_data[256*3] = {
 // depth of 50, so we adapt this a few chapters early on the GPU.
 __device__ vec3 color(const ray& r, const scene s, rand_state& rand_state) {
     vec3 light_center(5000, 0, 0);
-    float light_radius = 500;
-    float light_emissive = 100;
+    float light_radius = 100;
+    float light_emissive = 5000;
     float sky_emissive = .2f;
 
     ray cur_ray = r;
@@ -432,22 +432,27 @@ int main(int argc, char** argv) {
     setup_scene(input, sc, csv, _viridis_data);
 
     camera cam = setup_camera(nx, ny, dist);
+    vec3* h_fb = new vec3[fb_size];
 
-    clock_t start, stop;
-    start = clock();
+    double render_time = 0;
     for (int r = 0, frame = 0; r < nr; r++, frame += ns) {
         // Render our buffer
+        clock_t start;
+        start = clock();
         dim3 blocks(nx / tx + 1, ny / ty + 1);
         dim3 threads(tx, ty);
         render << <blocks, threads >> >(d_fb, sc, nx, ny, ns, frame, cam);
         checkCudaErrors(cudaGetLastError());
         checkCudaErrors(cudaDeviceSynchronize());
-        stop = clock();
-        cerr << "rendered " << (frame + ns) << " samples in " << ((double)(stop - start)) / CLOCKS_PER_SEC << " seconds.\r";
+        render_time += clock() - start;
+        cerr << "rendered " << (frame + ns) << " samples in " << render_time / CLOCKS_PER_SEC << " seconds.\r";
+
+        // save temp output
+        checkCudaErrors(cudaMemcpy(h_fb, d_fb, fb_size, cudaMemcpyDeviceToHost));
+        write_image("inprogress.png", h_fb, nx, ny, frame + ns);
     }
 
     // Output FB as Image
-    vec3* h_fb = new vec3[fb_size];
     checkCudaErrors(cudaMemcpy(h_fb, d_fb, fb_size, cudaMemcpyDeviceToHost));
     char file_name[100];
     sprintf(file_name, "%s_%dx%dx%d_%d_bvh.png", input, nx, ny, ns*nr, dist);
