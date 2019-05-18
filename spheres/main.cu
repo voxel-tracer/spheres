@@ -8,7 +8,7 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
-const int kMaxBounces = 50;
+const int kMaxBounces = 10;
 
 float _viridis_data[256*3] = {
      0.267004, 0.004874, 0.329415 ,
@@ -274,8 +274,8 @@ float _viridis_data[256*3] = {
 // depth of 50, so we adapt this a few chapters early on the GPU.
 __device__ vec3 color(const ray& r, const scene s, rand_state& rand_state) {
     vec3 light_center(5000, 0, 0);
-    float light_radius = 100;
-    float light_emissive = 5000;
+    float light_radius = 1000;
+    float light_emissive = 50;
     float sky_emissive = .2f;
 
     ray cur_ray = r;
@@ -408,7 +408,7 @@ int main(int argc, char** argv) {
     }
     const char* input = argv[1];
     const int nx = 1200;
-    const int ny = 800;
+    const int ny = 1200;
     const int ns = (argc > 2) ? strtol(argv[2], NULL, 10) : 1;
     const int tx = 8;
     const int ty = 8;
