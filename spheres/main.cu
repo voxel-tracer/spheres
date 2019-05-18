@@ -8,6 +8,8 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
+const int kMaxBounces = 50;
+
 float _viridis_data[256*3] = {
      0.267004, 0.004874, 0.329415 ,
      0.268510, 0.009605, 0.335427 ,
@@ -272,15 +274,14 @@ float _viridis_data[256*3] = {
 // depth of 50, so we adapt this a few chapters early on the GPU.
 __device__ vec3 color(const ray& r, const scene s, rand_state& rand_state) {
     vec3 light_center(5000, 0, 0);
-    float light_radius = 1000;
+    float light_radius = 500;
     float light_emissive = 100;
     float sky_emissive = .2f;
-    int max_bounces = 50;
 
     ray cur_ray = r;
     vec3 attenuation = vec3(1, 1, 1);
     vec3 incoming = vec3(0, 0, 0);
-    for (int i = 0; i < max_bounces; i++) {
+    for (int i = 0; i < kMaxBounces; i++) {
         hit_record rec;
         if (hit_bvh(s, cur_ray, 0.001f, FLT_MAX, rec)) {
             const vec3 p = cur_ray.point_at_parameter(rec.t);
@@ -328,12 +329,13 @@ __device__ vec3 color(const ray& r, const scene s, rand_state& rand_state) {
     return incoming; // exceeded recursion
 }
 
-__global__ void render(vec3 *fb, const scene sc, int max_x, int max_y, int ns, const camera cam) {
+__global__ void render(vec3 *fb, const scene sc, int max_x, int max_y, int ns, int frame, const camera cam) {
     int i = threadIdx.x + blockIdx.x * blockDim.x;
     int j = threadIdx.y + blockIdx.y * blockDim.y;
     if ((i >= max_x) || (j >= max_y)) return;
     int pixel_index = j * max_x + i;
-    rand_state state = (wang_hash(pixel_index) * 336343633) | 1;
+    int max_bounces = 50;
+    rand_state state = ((wang_hash(pixel_index) + frame * 101141101) * 336343633) | 1;
     vec3 col(0, 0, 0);
     for (int s = 0; s < ns; s++) {
         float u = float(i + random_float(state)) / float(max_x);
@@ -341,7 +343,7 @@ __global__ void render(vec3 *fb, const scene sc, int max_x, int max_y, int ns, c
         ray r = cam.get_ray(u, v, state);
         col += color(r, sc, state);
     }
-    fb[pixel_index] = col / float(ns);
+    fb[pixel_index] += col;
 }
 
 float rand(unsigned int &state) {
@@ -375,15 +377,15 @@ static uint32_t LinearToSRGB(float x)
     return u;
 }
 
-void write_image(const char* output_file, const vec3 *fb, const int nx, const int ny) {
+void write_image(const char* output_file, const vec3 *fb, const int nx, const int ny, const int ns) {
     char *data = new char[nx * ny * 3];
     int idx = 0;
     for (int j = ny - 1; j >= 0; j--) {
         for (int i = 0; i < nx; i++) {
             size_t pixel_index = j * nx + i;
-            data[idx++] = LinearToSRGB(fb[pixel_index].r());
-            data[idx++] = LinearToSRGB(fb[pixel_index].g());
-            data[idx++] = LinearToSRGB(fb[pixel_index].b());
+            data[idx++] = LinearToSRGB(fb[pixel_index].r() / ns);
+            data[idx++] = LinearToSRGB(fb[pixel_index].g() / ns);
+            data[idx++] = LinearToSRGB(fb[pixel_index].b() / ns);
         }
     }
     stbi_write_png(output_file, nx, ny, 3, (void*)data, nx * 3);
@@ -423,6 +425,7 @@ int main(int argc, char** argv) {
     // allocate FB
     vec3 *d_fb;
     checkCudaErrors(cudaMalloc((void **)&d_fb, fb_size));
+    checkCudaErrors(cudaMemset(d_fb, 0, fb_size));
 
     // setup scene
     scene sc;
@@ -430,34 +433,25 @@ int main(int argc, char** argv) {
 
     camera cam = setup_camera(nx, ny, dist);
 
-    double *runs = new double[nr];
-    for (int r = 0; r < nr; r++) {
-        clock_t start, stop;
-        start = clock();
+    clock_t start, stop;
+    start = clock();
+    for (int r = 0, frame = 0; r < nr; r++, frame += ns) {
         // Render our buffer
         dim3 blocks(nx / tx + 1, ny / ty + 1);
         dim3 threads(tx, ty);
-        render << <blocks, threads >> >(d_fb, sc, nx, ny, ns, cam);
+        render << <blocks, threads >> >(d_fb, sc, nx, ny, ns, frame, cam);
         checkCudaErrors(cudaGetLastError());
         checkCudaErrors(cudaDeviceSynchronize());
         stop = clock();
-        runs[r] = ((double)(stop - start)) / CLOCKS_PER_SEC;
-        cerr << "took " << runs[r] << " seconds.\n";
+        cerr << "rendered " << (frame + ns) << " samples in " << ((double)(stop - start)) / CLOCKS_PER_SEC << " seconds.\r";
     }
-    if (nr > 1) {
-        // compute median
-        qsort(runs, nr, sizeof(double), cmpfunc);
-        cerr << "median run took " << runs[nr / 2] << " seconds.\n";
-    }
-    delete[] runs;
-    runs = NULL;
 
     // Output FB as Image
     vec3* h_fb = new vec3[fb_size];
     checkCudaErrors(cudaMemcpy(h_fb, d_fb, fb_size, cudaMemcpyDeviceToHost));
     char file_name[100];
-    sprintf(file_name, "%s_%dx%dx%d_%d_bvh.png", input, nx, ny, ns, dist);
-    write_image(file_name, h_fb, nx, ny);
+    sprintf(file_name, "%s_%dx%dx%d_%d_bvh.png", input, nx, ny, ns*nr, dist);
+    write_image(file_name, h_fb, nx, ny, ns*nr);
     delete[] h_fb;
     h_fb = NULL;
 
