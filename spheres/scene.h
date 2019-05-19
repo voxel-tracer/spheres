@@ -426,9 +426,6 @@ __device__ bool shadow_bvh(const scene& sc, const ray& r, float t_min, float t_m
     bool down = true;
     int idx = 1;
 
-    unsigned int move_bit_stack = 0;
-    int lvl = 0;
-
     while (true) {
         if (down) {
             bvh_node node = (idx < 2048) ? d_nodes[idx] : sc.bvh[idx - 2048];
@@ -447,11 +444,7 @@ __device__ bool shadow_bvh(const scene& sc, const ray& r, float t_min, float t_m
                 }
                 else {
                     // current -> left
-                    const int move_left = signbit(r.direction()[node.split_axis()]);
-                    move_bit_stack &= ~(1 << lvl); // clear previous bit
-                    move_bit_stack |= move_left << lvl;
-                    idx = idx * 2 + move_left;
-                    lvl++;
+                    idx = idx * 2;
                 }
             }
             else {
@@ -462,14 +455,11 @@ __device__ bool shadow_bvh(const scene& sc, const ray& r, float t_min, float t_m
             break;
         }
         else {
-            const int move_left = (move_bit_stack >> (lvl - 1)) & 1;
-            const int left_idx = move_left;
-            if ((idx % 2) == left_idx) { // left -> right
-                idx += -2 * left_idx + 1; // node = node.sibling
+            if ((idx % 2) == 0) { // left -> right
+                idx++; // node = node.sibling
                 down = true;
             }
             else { // right -> parent
-                lvl--;
                 idx = idx / 2; // node = node.parent
             }
         }
