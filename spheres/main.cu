@@ -9,6 +9,8 @@
 #include "stb_image_write.h"
 
 const int kMaxBounces = 10;
+const int nx = 1200;
+const int ny = 1200;
 
 float _viridis_data[256*3] = {
      0.267004, 0.004874, 0.329415 ,
@@ -334,7 +336,6 @@ __global__ void render(vec3 *fb, const scene sc, int max_x, int max_y, int ns, i
     int j = threadIdx.y + blockIdx.y * blockDim.y;
     if ((i >= max_x) || (j >= max_y)) return;
     int pixel_index = j * max_x + i;
-    int max_bounces = 50;
     rand_state state = ((wang_hash(pixel_index) + frame * 101141101) * 336343633) | 1;
     vec3 col(0, 0, 0);
     for (int s = 0; s < ns; s++) {
@@ -407,8 +408,6 @@ int main(int argc, char** argv) {
         exit(-1);
     }
     const char* input = argv[1];
-    const int nx = 1200;
-    const int ny = 1200;
     const int ns = (argc > 2) ? strtol(argv[2], NULL, 10) : 1;
     const int tx = 8;
     const int ty = 8;
