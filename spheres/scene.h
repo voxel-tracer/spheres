@@ -420,7 +420,6 @@ __device__ bool hit_bvh(const scene& sc, const ray& r, float t_min, float t_max,
     return found;
 }
 
-
 __device__ bool shadow_bvh(const scene& sc, const ray& r, float t_min, float t_max) {
 
     bool down = true;

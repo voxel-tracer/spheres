@@ -276,8 +276,8 @@ float _viridis_data[256*3] = {
 // depth of 50, so we adapt this a few chapters early on the GPU.
 __device__ vec3 color(const ray& r, const scene s, rand_state& rand_state) {
     vec3 light_center(5000, 0, 0);
-    float light_radius = 1000;
-    float light_emissive = 50;
+    float light_radius = 500;
+    float light_emissive = 100;
     float sky_emissive = .2f;
 
     ray cur_ray = r;
@@ -411,7 +411,8 @@ int main(int argc, char** argv) {
     const int ns = (argc > 2) ? strtol(argv[2], NULL, 10) : 1;
     const int tx = 8;
     const int ty = 8;
-    const int nr = (argc > 3) ? strtol(argv[3], NULL, 10) : 1;
+    int nr = (argc > 3) ? strtol(argv[3], NULL, 10) : 1;
+    if (nr == 0) nr = INT_MAX;
     const int dist = (argc > 4) ? strtof(argv[4], NULL) : 100;
     const int csv = (argc > 5) ? strcmp(argv[5], "binary") : true;
     
