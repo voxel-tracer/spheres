@@ -146,18 +146,19 @@ int cmpfunc(const void * a, const void * b) {
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        cerr << "usage spheres file_name [num_samples=1] [num_runs=1] [camera_dist=100] [binary] [colormap=viridis.csv]";
+        cerr << "usage spheres file_name [num_samples=1] [num_runs=1] [camera_dist=100] [colormap=viridis.csv]";
         exit(-1);
     }
-    const char* input = argv[1];
+    char* input = argv[1];
     const int ns = (argc > 2) ? strtol(argv[2], NULL, 10) : 1;
     const int tx = 8;
     const int ty = 8;
     int nr = (argc > 3) ? strtol(argv[3], NULL, 10) : 1;
     if (nr == 0) nr = INT_MAX;
     const int dist = (argc > 4) ? strtof(argv[4], NULL) : 100;
-    const int csv = (argc > 5) ? strcmp(argv[5], "binary") : true;
-    const char* colormap = (argc > 6) ? argv[6] : "viridis.csv";
+    const char* colormap = (argc > 5) ? argv[5] : "viridis.csv";
+
+    const bool is_csv = strncmp(input + strlen(input) - 4, ".csv", 4) == 0;
     
     cerr << "Rendering a " << nx << "x" << ny << " image with " << ns << " samples per pixel ";
     cerr << "in " << tx << "x" << ty << " blocks.\n";
@@ -182,7 +183,7 @@ int main(int argc, char** argv) {
     }
     // setup scene
     scene sc;
-    setup_scene(input, sc, csv, _viridis_data);
+    setup_scene(input, sc, is_csv, _viridis_data);
     delete[] _viridis_data;
     _viridis_data = NULL;
 

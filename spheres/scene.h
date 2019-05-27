@@ -241,17 +241,17 @@ void load_from_csv(const char *input, sphere **spheres, bvh_node **nodes, int &n
     num_nodes = half_num_nodes * 2;
 }
 
-void setup_scene(const char *input, scene &sc, bool csv, float *colormap) {
+void setup_scene(char *input, scene &sc, bool csv, float *colormap) {
     int num_spheres, num_nodes;
     bvh_node *nodes;
     sphere *spheres;
 
     if (csv) {
         load_from_csv(input, &spheres, &nodes, num_spheres, num_nodes);
-        store_to_binary((std::string(input) + ".bin").c_str(), nodes, spheres, num_spheres, num_nodes);
+        store_to_binary(strcat(input, ".bin"), nodes, spheres, num_spheres, num_nodes);
     }
     else {
-        load_from_binary((std::string(input) + ".bin").c_str(), &spheres, &nodes, num_spheres, num_nodes);
+        load_from_binary(input, &spheres, &nodes, num_spheres, num_nodes);
     }
     sc.count = num_nodes / 2;
 
