@@ -45,4 +45,23 @@ __device__ bool hit_point(const vec3& center, const ray& r, float t_min, float t
     return false;
 }
 
+__device__ bool hit_light(const vec3& center, const float radius, const ray& r, float t_min, float t_max) {
+    vec3 oc = r.origin() - center;
+    float b = dot(oc, r.direction());
+    float c = dot(oc, oc) - radius * radius;
+    float discriminant = b * b - c;
+    if (discriminant > 0) {
+        const float dsqrt = sqrt(discriminant);
+        float temp = -b - dsqrt;
+        if (temp < t_max && temp > t_min) {
+            return true;
+        }
+        temp = -b + dsqrt;
+        if (temp < t_max && temp > t_min) {
+            return true;
+        }
+    }
+    return false;
+}
+
 #endif

@@ -34,39 +34,15 @@ __device__ vec3 color(const ray& r, const scene s, rand_state& rand_state) {
             int clr_idx = s.colors[rec.idx] * 3;
             vec3 albedo = vec3(d_colormap[clr_idx++], d_colormap[clr_idx++], d_colormap[clr_idx++]);
 
-            // explicit light sampling
-
-            // create a random direction towards sphere
-            
-            // coord system for sampling: sw, su, sv
-            vec3 sw = unit_vector(light_center - p);
-            vec3 su = unit_vector(cross(fabs(sw.x()) > 0.01f ? vec3(0, 1, 0) : vec3(1, 0, 0), sw));
-            vec3 sv = cross(sw, su);
-            
-            // sample sphere by solid angle
-            float cosAMax = sqrtf(1.0f - light_radius * light_radius / (p - light_center).squared_length());
-            float eps1 = random_float(rand_state), eps2 = random_float(rand_state);
-            float cosA = 1.0f - eps1 + eps1 * cosAMax;
-            float sinA = sqrtf(1.0f - cosA * cosA);
-            float phi = 2 * kPI * eps2;
-            vec3 l = unit_vector(su * cosf(phi) * sinA + sv * sin(phi) * sinA + sw * cosA);
-
-            // shoot shadow ray
-            if (!shadow_bvh(s, ray(p, l), 0.001f, FLT_MAX)) {
-                float omega = 2 * kPI * (1 - cosAMax);
-
-                vec3 rdir = cur_ray.direction();
-                vec3 nl = dot(rec.n, rdir) < 0 ? rec.n : -rec.n;
-                incoming += attenuation * (albedo * light_emissive) * (fmaxf(0.0f, dot(l, nl)) * omega / kPI);
-            }
-
             attenuation *= albedo;
             cur_ray = ray(p, target);
         }
         else if (i == 0) { // primary ray didn't hit anything
             break; // black background
         }
-        else {
+        else if (hit_light(light_center, light_radius, cur_ray, 0.001f, FLT_MAX)) {
+            return attenuation * light_emissive;
+        } else { // no intersection, ray hits the sky
             return incoming + attenuation * sky_emissive;
         }
     }
