@@ -12,57 +12,62 @@ const int kMaxBounces = 10;
 const int nx = 1200;
 const int ny = 1200;
 
-// Matching the C++ code would recurse enough into color() calls that
-// it was blowing up the stack, so we have to turn this into a
-// limited-depth loop instead.  Later code in the book limits to a max
-// depth of 50, so we adapt this a few chapters early on the GPU.
-__device__ vec3 color(const ray& r, const scene s, rand_state& rand_state) {
-    vec3 light_center(5000, 0, 0);
-    float light_radius = 500;
-    float light_emissive = 100;
-    float sky_emissive = .2f;
+__global__ void render(vec3 *fb, const scene sc, int max_x, int max_y, int frame, const camera cam) {
 
-    ray cur_ray = r;
-    vec3 attenuation = vec3(1, 1, 1);
-    vec3 incoming = vec3(0, 0, 0);
-    for (int i = 0; i < kMaxBounces; i++) {
-        hit_record rec;
-        if (hit_bvh(s, cur_ray, 0.001f, FLT_MAX, rec)) {
-            const vec3 p = cur_ray.point_at_parameter(rec.t);
-            vec3 target = rec.n + random_in_unit_sphere(rand_state);
+    const vec3 light_center(5000, 0, 0);
+    const float light_radius = 500;
+    const float light_emissive = 100;
+    const float sky_emissive = .2f;
 
-            int clr_idx = s.colors[rec.idx] * 3;
-            vec3 albedo = vec3(d_colormap[clr_idx++], d_colormap[clr_idx++], d_colormap[clr_idx++]);
-
-            attenuation *= albedo;
-            cur_ray = ray(p, target);
-        }
-        else if (i == 0) { // primary ray didn't hit anything
-            break; // black background
-        }
-        else if (hit_light(light_center, light_radius, cur_ray, 0.001f, FLT_MAX)) {
-            return attenuation * light_emissive;
-        } else { // no intersection, ray hits the sky
-            return incoming + attenuation * sky_emissive;
-        }
-    }
-    return incoming; // exceeded recursion
-}
-
-__global__ void render(vec3 *fb, const scene sc, int max_x, int max_y, int ns, int frame, const camera cam) {
-    int i = threadIdx.x + blockIdx.x * blockDim.x;
-    int j = threadIdx.y + blockIdx.y * blockDim.y;
+    const int i = threadIdx.x + blockIdx.x * blockDim.x;
+    const int j = threadIdx.y + blockIdx.y * blockDim.y;
     if ((i >= max_x) || (j >= max_y)) return;
-    int pixel_index = j * max_x + i;
+    const int pixel_index = j * max_x + i;
+
     rand_state state = ((wang_hash(pixel_index) + frame * 101141101) * 336343633) | 1;
-    vec3 col(0, 0, 0);
-    for (int s = 0; s < ns; s++) {
-        float u = float(i + random_float(state)) / float(max_x);
-        float v = float(j + random_float(state)) / float(max_y);
-        ray r = cam.get_ray(u, v, state);
-        col += color(r, sc, state);
+    unsigned int bounce = kMaxBounces;
+    vec3 attenuation;
+    vec3 incoming;
+    ray r;
+
+    while (true) {
+        const bool terminated = bounce == kMaxBounces;
+        if (terminated) {
+            // generate ray
+            float u = float(i + random_float(state)) / float(max_x);
+            float v = float(j + random_float(state)) / float(max_y);
+            r = cam.get_ray(u, v, state);
+
+            // setup traversal
+            bounce = 0;
+            attenuation = vec3(1, 1, 1);
+            incoming = vec3(0, 0, 0);
+        }
+
+        for (; bounce < kMaxBounces; bounce++) {
+            hit_record rec;
+            if (hit_bvh(sc, r, 0.001f, FLT_MAX, rec)) {
+                const vec3 p = r.point_at_parameter(rec.t);
+                vec3 target = rec.n + random_in_unit_sphere(state);
+
+                int clr_idx = sc.colors[rec.idx] * 3;
+                vec3 albedo = vec3(d_colormap[clr_idx++], d_colormap[clr_idx++], d_colormap[clr_idx++]);
+
+                attenuation *= albedo;
+                r = ray(p, target);
+            } 
+            else {
+                if (bounce > 0) // non primary rays hit the sky
+                    incoming = attenuation * sky_emissive;
+                break;
+            }
+        }
+
+        // for now just trace one ray per thread
+        break;
     }
-    fb[pixel_index] += col;
+
+    fb[pixel_index] += incoming;
 }
 
 float rand(unsigned int &state) {
@@ -173,7 +178,7 @@ int main(int argc, char** argv) {
         start = clock();
         dim3 blocks(nx / tx + 1, ny / ty + 1);
         dim3 threads(tx, ty);
-        render << <blocks, threads >> >(d_fb, sc, nx, ny, ns, frame, cam);
+        render << <blocks, threads >> >(d_fb, sc, nx, ny, frame, cam);
         checkCudaErrors(cudaGetLastError());
         checkCudaErrors(cudaDeviceSynchronize());
         render_time += clock() - start;
