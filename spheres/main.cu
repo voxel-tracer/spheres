@@ -101,8 +101,13 @@ __global__ void render(const render_params params, int frame, const camera cam) 
                 bounce++;
             }
             else {
-                if (bounce > 0) // non primary rays hit the sky
-                    incoming = attenuation * sky_emissive;
+                // primary rays (bounce = 0) return black
+                if (bounce > 0) {
+                    if (hit_light(light_center, light_radius, r, 0.001f, FLT_MAX))
+                        incoming = attenuation * light_emissive;
+                    else
+                        incoming = attenuation * sky_emissive;
+                }
                 bounce = kMaxBounces; // mark the lane as terminated
                 break;
             }
