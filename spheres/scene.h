@@ -86,8 +86,9 @@ non-leaf nodes represent bounding box of all spheres that are inside it
 leaf nodes represent 2 spheres
 */
 struct bvh_node {
-    __host__ bvh_node() {}
+    __host__ __device__ bvh_node() {}
     __host__ bvh_node(const vec3& A, const vec3& B) :a(A), b(B) {}
+    __device__ bvh_node(float x0, float y0, float z0, float x1, float y1, float z1) : a(x0, y0, z0), b(x1, y1, z1) {}
 
     __device__ vec3 min() const { return a; }
     __device__ vec3 max() const { return b; }
@@ -104,9 +105,11 @@ struct bvh_node {
 __device__ __constant__ bvh_node d_nodes[2048];
 __device__ __constant__ float d_colormap[256 * 3];
 
+texture<float2> t_bvh;
+float* d_bvh_buf;
+
 struct scene {
     float* spheres;
-    bvh_node* bvh;
     int count;
     int *colors;
 
@@ -258,21 +261,21 @@ void setup_scene(char *input, scene &sc, bool csv, float *colormap) {
     // once we build the tree, copy the first 2048 nodes to constant memory
     const int const_size = min(2048, num_nodes);
     checkCudaErrors(cudaMemcpyToSymbol(d_nodes, nodes, const_size * sizeof(bvh_node)));
-    checkCudaErrors(cudaMemcpyToSymbol(d_colormap, colormap, 256 * 3 * sizeof(float)));
     cout << "copied " << const_size << " nodes to constant memory." << endl;
+
+    // copy colors to constant memory
+    checkCudaErrors(cudaMemcpyToSymbol(d_colormap, colormap, 256 * 3 * sizeof(float)));
 
     // copy remaining nodes to global memory
     int bvh_size = num_nodes - const_size;
     if (bvh_size > 0) {
-        checkCudaErrors(cudaMalloc((void **)&sc.bvh, bvh_size * sizeof(bvh_node)));
-        checkCudaErrors(cudaMemcpy(sc.bvh, nodes + const_size, bvh_size * sizeof(bvh_node), cudaMemcpyHostToDevice));
-        cout << "copied " << bvh_size << " nodes to global memory." << endl;
+        // declare and allocate memory
+        const int buf_size_bytes = bvh_size * 6 * sizeof(float);
+        checkCudaErrors(cudaMalloc(&d_bvh_buf, buf_size_bytes));
+        checkCudaErrors(cudaMemcpy(d_bvh_buf, (void*)(nodes + const_size), buf_size_bytes, cudaMemcpyHostToDevice));
+        checkCudaErrors(cudaBindTexture(NULL, t_bvh, (void*)d_bvh_buf, buf_size_bytes));
+        cout << "created texture memory" << endl;
     }
-    else {
-        sc.bvh = NULL;
-    }
-
-    delete[] nodes;
 
     cout << "copying spheres to device" << endl;
     cout.flush();
@@ -306,6 +309,7 @@ void setup_scene(char *input, scene &sc, bool csv, float *colormap) {
     checkCudaErrors(cudaMemset(sc.counters, 0, 32 * sizeof(long)));
 #endif
 
+    delete[] nodes;
     delete[] floats;
     delete[] spheres;
     delete[] colors;
@@ -343,9 +347,9 @@ void releaseScene(scene& sc) {
 
     checkCudaErrors(cudaFree(sc.counters));
 #endif
-    if (sc.bvh != NULL) {
-        checkCudaErrors(cudaFree(sc.bvh));
-    }
+    // destroy texture object
+    checkCudaErrors(cudaUnbindTexture(t_bvh));
+    checkCudaErrors(cudaFree(d_bvh_buf));
     checkCudaErrors(cudaFree(sc.spheres));
     checkCudaErrors(cudaFree(sc.colors));
 }
@@ -366,7 +370,19 @@ __device__ bool hit_bvh(const scene& sc, const ray& r, float t_min, float t_max,
 
     while (true) {
         if (down) {
-            bvh_node node = (idx < 2048) ? d_nodes[idx] : sc.bvh[idx - 2048];
+            bvh_node node;
+            if (idx < 2048) {
+                node = d_nodes[idx];
+            }
+            else {
+                unsigned int tex_idx = (idx - 2048) * 3;
+                float2 a = tex1Dfetch(t_bvh, tex_idx++);
+                float2 b = tex1Dfetch(t_bvh, tex_idx++);
+                float2 c = tex1Dfetch(t_bvh, tex_idx++);
+
+                node = bvh_node(a.x, a.y, b.x, b.y, c.x, c.y);
+            }
+
 #ifdef COUNT_BVH
             atomicAdd(sc.counters + lvl + 1, 1);
 #endif
@@ -419,7 +435,7 @@ __device__ bool hit_bvh(const scene& sc, const ray& r, float t_min, float t_max,
 
     return found;
 }
-
+/*
 __device__ bool shadow_bvh(const scene& sc, const ray& r, float t_min, float t_max) {
 
     bool down = true;
@@ -427,7 +443,14 @@ __device__ bool shadow_bvh(const scene& sc, const ray& r, float t_min, float t_m
 
     while (true) {
         if (down) {
-            bvh_node node = (idx < 2048) ? d_nodes[idx] : sc.bvh[idx - 2048];
+            float x0 = tex1Dfetch<float>(sc.bvh_tex, idx * 6);
+            float y0 = tex1Dfetch<float>(sc.bvh_tex, idx * 6 + 1);
+            float z0 = tex1Dfetch<float>(sc.bvh_tex, idx * 6 + 2);
+            float x1 = tex1Dfetch<float>(sc.bvh_tex, idx * 6 + 3);
+            float y1 = tex1Dfetch<float>(sc.bvh_tex, idx * 6 + 4);
+            float z1 = tex1Dfetch<float>(sc.bvh_tex, idx * 6 + 5);
+
+            bvh_node node(x0, y0, z0, x1, y1, z1);
             if (hit_bbox(node, r, t_min, t_max)) {
                 if (idx >= sc.count) { // leaf node
                     int m = (idx - sc.count) * lane_size_float;
@@ -466,3 +489,4 @@ __device__ bool shadow_bvh(const scene& sc, const ray& r, float t_min, float t_m
 
     return false;
 }
+*/
