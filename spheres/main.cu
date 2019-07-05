@@ -30,9 +30,9 @@ struct render_params {
 
 __global__ void render(const render_params params, int frame, const camera cam) {
 
-    const vec3 light_center(5000, 0, 0);
-    const float light_radius = 500;
-    const float light_emissive = 100;
+    //const vec3 light_center(5000, 0, 0);
+    //const float light_radius = 500;
+    //const float light_emissive = 100;
     const float sky_emissive = .2f;
 
     const int i = threadIdx.x + blockIdx.x * blockDim.x;
@@ -103,9 +103,9 @@ __global__ void render(const render_params params, int frame, const camera cam) 
             else {
                 // primary rays (bounce = 0) return black
                 if (bounce > 0) {
-                    if (hit_light(light_center, light_radius, r, 0.001f, FLT_MAX))
-                        incoming = attenuation * light_emissive;
-                    else
+                    //if (hit_light(light_center, light_radius, r, 0.001f, FLT_MAX))
+                    //    incoming = attenuation * light_emissive;
+                    //else
                         incoming = attenuation * sky_emissive;
                 }
                 bounce = kMaxBounces; // mark the lane as terminated
@@ -259,8 +259,8 @@ int main(int argc, char** argv) {
         clock_t start;
         start = clock();
         // visual profiler shows that we can only run 40 warps per SM, and I have 5 SMs so I can run a total of
-        // 5*40*32 = 6400
-        dim3 blocks(6400, 1);
+        // 5*40*32 = 6400. Run twice as much to give the device enough thread to hide memory latency
+        dim3 blocks(6400*2, 1);
         dim3 threads(MaxBlockWidth, MaxBlockHeight);
         checkCudaErrors(cudaMemset(params.warpCounter, 0, sizeof(int)));
         cudaProfilerStart();
