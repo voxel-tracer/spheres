@@ -28,6 +28,36 @@ struct render_params {
     unsigned int height;
 };
 
+struct paths {
+    ray* r;
+    vec3* attentuation;
+    ushort1* bounce;
+    int* hit_id;
+    vec3* hit_normal;
+    float* hit_t;
+};
+
+void allocate_paths(paths& p, unsigned int num_paths) {
+    checkCudaErrors(cudaMalloc((void**)&p.r, num_paths*sizeof(ray)));
+    checkCudaErrors(cudaMalloc((void**)& p.attentuation, num_paths * sizeof(vec3)));
+    checkCudaErrors(cudaMalloc((void**)& p.bounce, num_paths * sizeof(ushort1)));
+    checkCudaErrors(cudaMalloc((void**)& p.hit_id, num_paths * sizeof(int)));
+    checkCudaErrors(cudaMalloc((void**)& p.hit_normal, num_paths * sizeof(vec3)));
+    checkCudaErrors(cudaMalloc((void**)& p.hit_t, num_paths * sizeof(float)));
+
+    checkCudaErrors(cudaMemset((void*)p.attentuation, 0, num_paths * sizeof(vec3)));
+    checkCudaErrors(cudaMemset((void*)p.bounce, 0, num_paths * sizeof(ushort1)));
+}
+
+void free_paths(const paths& p) {
+    checkCudaErrors(cudaFree(p.r));
+    checkCudaErrors(cudaFree(p.attentuation));
+    checkCudaErrors(cudaFree(p.bounce));
+    checkCudaErrors(cudaFree(p.hit_id));
+    checkCudaErrors(cudaFree(p.hit_normal));
+    checkCudaErrors(cudaFree(p.hit_t));
+}
+
 __global__ void render(const render_params params, int frame, const camera cam) {
 
     //const vec3 light_center(5000, 0, 0);
@@ -253,6 +283,9 @@ int main(int argc, char** argv) {
     params.width = nx;
     params.height = ny;
 
+    paths p;
+    allocate_paths(p, params.numRays);
+
     double render_time = 0;
     for (int r = 0, frame = 0; r < nr; r++, frame += ns) {
         // Render our buffer
@@ -285,6 +318,7 @@ int main(int argc, char** argv) {
     h_fb = NULL;
 
     // clean up
+    free_paths(p);
     releaseScene(sc);
     checkCudaErrors(cudaDeviceSynchronize());
     checkCudaErrors(cudaGetLastError());
