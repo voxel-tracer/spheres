@@ -19,8 +19,7 @@ const int nx = 1200;
 const int ny = 1200;
 
 struct render_params {
-    unsigned int* rayIds;
-    unsigned int numRays;
+    unsigned int numpaths;
     int* warpCounter;
     vec3* fb;
     scene sc;
@@ -29,52 +28,93 @@ struct render_params {
 };
 
 struct paths {
+    unsigned int* pixel_id;
     ray* r;
+    rand_state* state;
     vec3* attentuation;
-    ushort1* bounce;
+    unsigned short* bounce;
     int* hit_id;
     vec3* hit_normal;
     float* hit_t;
 };
 
-void allocate_paths(paths& p, unsigned int num_paths) {
-    checkCudaErrors(cudaMalloc((void**)&p.r, num_paths*sizeof(ray)));
+void setup_paths(paths& p, unsigned int num_paths, int nx, int ny, int ns) {
+    checkCudaErrors(cudaMalloc((void**)& p.r, num_paths * sizeof(ray)));
+    checkCudaErrors(cudaMalloc((void**)& p.state, num_paths * sizeof(rand_state)));
     checkCudaErrors(cudaMalloc((void**)& p.attentuation, num_paths * sizeof(vec3)));
-    checkCudaErrors(cudaMalloc((void**)& p.bounce, num_paths * sizeof(ushort1)));
+    checkCudaErrors(cudaMalloc((void**)& p.bounce, num_paths * sizeof(unsigned short)));
     checkCudaErrors(cudaMalloc((void**)& p.hit_id, num_paths * sizeof(int)));
     checkCudaErrors(cudaMalloc((void**)& p.hit_normal, num_paths * sizeof(vec3)));
     checkCudaErrors(cudaMalloc((void**)& p.hit_t, num_paths * sizeof(float)));
+    checkCudaErrors(cudaMalloc((void**)& p.pixel_id, num_paths * sizeof(unsigned int)));
 
-    checkCudaErrors(cudaMemset((void*)p.attentuation, 0, num_paths * sizeof(vec3)));
-    checkCudaErrors(cudaMemset((void*)p.bounce, 0, num_paths * sizeof(ushort1)));
+    // init path_id on host, this way we have more control about how to layout the samples in memory
+    {
+        unsigned int* ids = new unsigned int[nx * ny * ns];
+        int idx = 0;
+        for (size_t y = 0; y < ny; y++)
+            for (size_t x = 0; x < nx; x++)
+                for (size_t spp = 0; spp < ns; spp++)
+                    ids[idx++] = y * nx + x;
+        checkCudaErrors(cudaMemcpy(p.pixel_id, ids, nx * ns * ny * sizeof(unsigned int), cudaMemcpyHostToDevice));
+        delete[] ids;
+    }
 }
 
 void free_paths(const paths& p) {
     checkCudaErrors(cudaFree(p.r));
+    checkCudaErrors(cudaFree(p.state));
     checkCudaErrors(cudaFree(p.attentuation));
     checkCudaErrors(cudaFree(p.bounce));
     checkCudaErrors(cudaFree(p.hit_id));
     checkCudaErrors(cudaFree(p.hit_normal));
     checkCudaErrors(cudaFree(p.hit_t));
+    checkCudaErrors(cudaFree(p.pixel_id));
 }
 
-__global__ void render(const render_params params, int frame, const camera cam) {
+__global__ void init(const render_params params, paths p, int frame, const camera cam) {
+    const unsigned int tx = threadIdx.x + blockIdx.x * blockDim.x;
+    const unsigned int ty = threadIdx.y + blockIdx.y * blockDim.y;
+    const unsigned int pid = ty * params.width + tx;
+    if (pid >= params.numpaths)
+        return;
 
-    //const vec3 light_center(5000, 0, 0);
-    //const float light_radius = 500;
-    //const float light_emissive = 100;
-    const float sky_emissive = .2f;
+    // initialize random state
+    rand_state state = ((wang_hash(pid) + frame * 101141101) * 336343633) | 1;
 
-    const int i = threadIdx.x + blockIdx.x * blockDim.x;
-    const int j = threadIdx.y + blockIdx.y * blockDim.y;
+    // retrieve pixel_id corresponding to current path
+    const unsigned int pixel_id = p.pixel_id[pid];
 
-    rand_state   state = ((wang_hash(j * params.width + i) + frame * 101141101) * 336343633) | 1;
-    unsigned int bounce = kMaxBounces;
-    vec3         attenuation;
-    vec3         incoming;
-    ray          r;
-    int          rayidx;
-    unsigned int pixel_id;
+    // compute sample coordinates
+    const unsigned int x = pixel_id % params.width;
+    const unsigned int y = pixel_id / params.width;
+    float u = float(x + random_float(state)) / float(params.width);
+    float v = float(y + random_float(state)) / float(params.height);
+
+    // generate camera ray
+    p.r[pid] = cam.get_ray(u, v, state);
+
+    // save updated random state to memory
+    p.state[pid] = state;
+
+    p.attentuation[pid] = vec3(1, 1, 1);
+
+    p.bounce[pid] = 0;
+}
+
+__global__ void hit_bvh(const render_params params, paths p) {
+    unsigned int pid = 0; // currently traced path
+    ray r; // corresponding ray
+
+    // bvh traversal state
+    bool down = false;
+    int idx = 1;
+    bool found = false;
+    float closest = FLT_MAX;
+    hit_record rec;
+
+    unsigned int move_bit_stack = 0;
+    int lvl = 0;
 
     // Initialize persistent threads.
     // given that each block is 32 thread wide, we can use threadIdx.x as a warpId
@@ -86,60 +126,92 @@ __global__ void render(const render_params params, int frame, const camera cam) 
         const int tidx = threadIdx.x;
         volatile int& rayBase = nextRayArray[threadIdx.y];
 
-        // Fetch new rays from the global pool using lane 0.
-
-        const bool terminated               = bounce == kMaxBounces;
+        // identify which lanes are done
+        const bool          terminated      = idx == 1 && !down;
         const unsigned int  maskTerminated  = __ballot_sync(__activemask(), terminated);
         const int           numTerminated   = __popc(maskTerminated);
         const int           idxTerminated   = __popc(maskTerminated & ((1u << tidx) - 1));
 
         if (terminated) {
+            // first terminated lane updates the base ray index
             if (idxTerminated == 0)
                 rayBase = atomicAdd(params.warpCounter, numTerminated);
 
-            rayidx = rayBase + idxTerminated;
-            if (rayidx >= params.numRays)
+            pid = rayBase + idxTerminated;
+            if (pid >= params.numpaths)
                 return;
 
-            // Fetch pixel_id
-            pixel_id = params.rayIds[rayidx];
-            const int x = pixel_id % params.width;
-            const int y = pixel_id / params.width;
+            // setup ray if path not already terminated
+            if (p.bounce[pid] < kMaxBounces) {
+                // Fetch ray
+                r = p.r[pid];
 
-            // generate ray
-            float u = float(x + random_float(state)) / float(params.width);
-            float v = float(y + random_float(state)) / float(params.height);
-            r = cam.get_ray(u, v, state);
-
-            // setup traversal
-            bounce = 0;
-            attenuation = vec3(1, 1, 1);
-            incoming = vec3(0, 0, 0);
+                // setup traversal
+                down = true;
+                idx = 1;
+                found = false;
+                closest = FLT_MAX;
+                move_bit_stack = 0;
+                lvl = 0;
+            }
         }
 
-        while (bounce < kMaxBounces) {
-            hit_record rec;
-            if (hit_bvh(params.sc, r, 0.001f, FLT_MAX, rec)) {
-                const vec3 p = r.point_at_parameter(rec.t);
-                vec3 target = rec.n + random_in_unit_sphere(state);
+        while (true) {
+            if (down) {
+                bvh_node node;
+                if (idx < 2048)
+                    node = d_nodes[idx];
+                else {
+                    unsigned int tex_idx = (idx - 2048) * 3;
+                    float2 a = tex1Dfetch(t_bvh, tex_idx++);
+                    float2 b = tex1Dfetch(t_bvh, tex_idx++);
+                    float2 c = tex1Dfetch(t_bvh, tex_idx++);
 
-                int clr_idx = params.sc.colors[rec.idx] * 3;
-                vec3 albedo = vec3(d_colormap[clr_idx++], d_colormap[clr_idx++], d_colormap[clr_idx++]);
+                    node = bvh_node(a.x, a.y, b.x, b.y, c.x, c.y);
+                }
 
-                attenuation *= albedo;
-                r = ray(p, target);
-                bounce++;
+                if (hit_bbox(node, r, 0.001f, closest)) {
+                    const scene& sc = params.sc;
+                    if (idx >= sc.count) { // leaf node
+                        int m = (idx - sc.count) * lane_size_float;
+                        #pragma unroll
+                        for (int i = 0; i < lane_size_spheres; i++) {
+                            vec3 center(sc.spheres[m++], sc.spheres[m++], sc.spheres[m++]);
+                            if (hit_point(center, r, 0.001f, closest, rec)) {
+                                found = true;
+                                closest = rec.t;
+                                rec.idx = (idx - sc.count) * lane_size_spheres + i;
+                            }
+                        }
+                        down = false;
+                    }
+                    else {
+                        // current -> left
+                        const int move_left = signbit(r.direction()[node.split_axis()]);
+                        move_bit_stack &= ~(1 << lvl); // clear previous bit
+                        move_bit_stack |= move_left << lvl;
+                        idx = idx * 2 + move_left;
+                        lvl++;
+                    }
+                }
+                else {
+                    down = false;
+                }
+            }
+            else if (idx == 1) {
+                break;
             }
             else {
-                // primary rays (bounce = 0) return black
-                if (bounce > 0) {
-                    //if (hit_light(light_center, light_radius, r, 0.001f, FLT_MAX))
-                    //    incoming = attenuation * light_emissive;
-                    //else
-                        incoming = attenuation * sky_emissive;
+                const int move_left = (move_bit_stack >> (lvl - 1)) & 1;
+                const int left_idx = move_left;
+                if ((idx % 2) == left_idx) { // left -> right
+                    idx += -2 * left_idx + 1; // node = node.sibling
+                    down = true;
                 }
-                bounce = kMaxBounces; // mark the lane as terminated
-                break;
+                else { // right -> parent
+                    lvl--;
+                    idx = idx / 2; // node = node.parent
+                }
             }
 
             // some lanes may have already exited the loop, if not enough active thread are left, exit the loop
@@ -147,15 +219,68 @@ __global__ void render(const render_params params, int frame, const camera cam) 
                 break;
         }
 
-        if (bounce == kMaxBounces) {
-            // only works when spp=1
-            // otherwise we should do this atomically
-            atomicAdd(params.fb[pixel_id].e, incoming.e[0]);
-            atomicAdd(params.fb[pixel_id].e+1, incoming.e[1]);
-            atomicAdd(params.fb[pixel_id].e+2, incoming.e[2]);
+        // finished traversing bvh
+        if (found) {
+            p.hit_id[pid] = rec.idx;
+            p.hit_normal[pid] = rec.n;
+            p.hit_t[pid] = rec.t;
+        }
+        else {
+            p.hit_id[pid] = -1;
         }
     }
+}
 
+__global__ void update(const render_params params, paths p) {
+    const unsigned int tx = threadIdx.x + blockIdx.x * blockDim.x;
+    const unsigned int ty = threadIdx.y + blockIdx.y * blockDim.y;
+    const unsigned int pid = ty * params.width + tx;
+    if (pid >= params.numpaths)
+        return;
+
+    // is the path already done ?
+    unsigned int bounce = p.bounce[pid];
+    if (bounce == kMaxBounces)
+        return; // yup, done and already taken care of
+
+    // did the ray hit a primitive ?
+    const int hit_id = p.hit_id[pid];
+    if (hit_id >= 0) {
+        // update path attenuation
+        int clr_idx = params.sc.colors[hit_id] * 3;
+        const vec3 albedo = vec3(d_colormap[clr_idx++], d_colormap[clr_idx++], d_colormap[clr_idx++]);
+        p.attentuation[pid] *= albedo;
+
+        // scatter ray, only if we didn't reach kMaxBounces
+        bounce++;
+        if (bounce < kMaxBounces) {
+            const ray r = p.r[pid];
+            const float hit_t = p.hit_t[pid];
+            const vec3 hit_p = r.point_at_parameter(hit_t);
+
+            const vec3 hit_n = p.hit_normal[pid];
+            rand_state state = p.state[pid];
+            const vec3 target = hit_n + random_in_unit_sphere(state);
+
+            p.r[pid] = ray(hit_p, target);
+            p.state[pid] = state;
+        }
+    }
+    else {
+        // primary rays (bounce = 0) return black
+        if (bounce > 0) {
+            const float sky_emissive = .2f;
+            vec3 incoming = p.attentuation[pid] * sky_emissive;
+            const unsigned int pixel_id = p.pixel_id[pid];
+            atomicAdd(params.fb[pixel_id].e, incoming.e[0]);
+            atomicAdd(params.fb[pixel_id].e + 1, incoming.e[1]);
+            atomicAdd(params.fb[pixel_id].e + 2, incoming.e[2]);
+        }
+        
+        bounce = kMaxBounces; // mark path as terminated
+    }
+
+    p.bounce[pid] = bounce;
 }
 
 float rand(unsigned int &state) {
@@ -212,19 +337,6 @@ int cmpfunc(const void * a, const void * b) {
         return 0;
 }
 
-void setup_pixels(int nx, int ny, int ns, unsigned int** d_pixels) {
-    checkCudaErrors(cudaMalloc((void**)d_pixels, nx * ny * ns * sizeof(unsigned int)));
-    unsigned int* pixels = new unsigned int[nx * ny * ns];
-    int idx = 0;
-    for (size_t y = 0; y < ny; y++)
-        for (size_t x = 0; x < nx; x++)
-            for (size_t spp = 0; spp < ns; spp++)
-                pixels[idx++] = y * nx + x;
-    
-    checkCudaErrors(cudaMemcpy(*d_pixels, pixels, nx * ns * ny * sizeof(unsigned int), cudaMemcpyHostToDevice));
-    delete[] pixels;
-}
-
 int main(int argc, char** argv) {
     if (argc < 2) {
         cerr << "usage spheres file_name [num_samples=1] [num_runs=1] [camera_dist=100] [colormap=viridis.csv]";
@@ -246,18 +358,15 @@ int main(int argc, char** argv) {
 
     // allocate FB
     vec3 *d_fb;
-    unsigned int* d_pixels;
     int* d_warpCount;
     checkCudaErrors(cudaMalloc((void **)&d_fb, fb_size));
     checkCudaErrors(cudaMemset(d_fb, 0, fb_size));
 
     checkCudaErrors(cudaMalloc((void**)&d_warpCount, sizeof(int)));
 
-    setup_pixels(nx, ny, ns, &d_pixels);
-
     // load colormap
     vector<vector<float>> data = parse2DCsvFile(colormap);
-    cout << "colormap contains " << data.size() << " points\n";
+    std::cout << "colormap contains " << data.size() << " points\n";
     float *_viridis_data = new float[data.size() * 3];
     int idx = 0;
     for (auto l : data) {
@@ -275,8 +384,7 @@ int main(int argc, char** argv) {
     vec3* h_fb = new vec3[fb_size];
 
     render_params params;
-    params.rayIds = d_pixels;
-    params.numRays = nx * ny * ns;
+    params.numpaths = nx * ny * ns;
     params.warpCounter = d_warpCount;
     params.fb = d_fb;
     params.sc = sc;
@@ -284,21 +392,43 @@ int main(int argc, char** argv) {
     params.height = ny;
 
     paths p;
-    allocate_paths(p, params.numRays);
+    setup_paths(p, params.numpaths, nx, ny, ns);
 
     double render_time = 0;
-    for (int r = 0, frame = 0; r < nr; r++, frame += ns) {
+    for (int r = 0, frame = 0; r < nr; r++, frame ++) {
         // Render our buffer
         clock_t start;
         start = clock();
-        // visual profiler shows that we can only run 40 warps per SM, and I have 5 SMs so I can run a total of
-        // 5*40*32 = 6400. Run twice as much to give the device enough thread to hide memory latency
-        dim3 blocks(6400*2, 1);
-        dim3 threads(MaxBlockWidth, MaxBlockHeight);
-        checkCudaErrors(cudaMemset(params.warpCounter, 0, sizeof(int)));
+
         cudaProfilerStart();
-        render << <blocks, threads >> > (params, frame, cam);
-        checkCudaErrors(cudaGetLastError());
+        // init paths
+        {
+            dim3 threads(128);
+            dim3 blocks((params.numpaths + 127) / threads.x);
+            init <<<blocks, threads >>> (params, p, frame, cam);
+            checkCudaErrors(cudaGetLastError());
+        }
+        for (size_t bounce = 0; bounce < kMaxBounces; bounce++) {
+            // reset pool counter
+            checkCudaErrors(cudaMemset(params.warpCounter, 0, sizeof(int)));
+
+            // traverse bvh
+            {
+                // visual profiler shows that we can only run 40 warps per SM, and I have 5 SMs so I can run a total of
+                // 5*40*32 = 6400. Run twice as much to give the device enough thread to hide memory latency
+                dim3 blocks(6400 * 2, 1);
+                dim3 threads(MaxBlockWidth, MaxBlockHeight);
+                hit_bvh << <blocks, threads >> > (params, p);
+                checkCudaErrors(cudaGetLastError());
+            }
+            // update paths
+            {
+                dim3 threads(128);
+                dim3 blocks((params.numpaths + 127) / threads.x);
+                update << <blocks, threads >> > (params, p);
+                checkCudaErrors(cudaGetLastError());
+            }
+        }
         checkCudaErrors(cudaDeviceSynchronize());
         render_time += clock() - start;
         cerr << "rendered " << (frame + ns) << " samples in " << render_time / CLOCKS_PER_SEC << " seconds.\r";
