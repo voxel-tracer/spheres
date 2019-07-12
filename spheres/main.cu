@@ -19,8 +19,6 @@ const int nx = 1200;
 const int ny = 1200;
 
 struct render_params {
-    unsigned int numpaths;
-    int* warpCounter;
     vec3* fb;
     scene sc;
     unsigned int width;
@@ -28,7 +26,11 @@ struct render_params {
 };
 
 struct paths {
-    unsigned int* pixel_id;
+    // pixel_id of all samples that need to be traced by the renderer
+    unsigned int* all_sample_pool;
+    unsigned int num_all_samples;
+    int* next_sample;
+
     ray* r;
     rand_state* state;
     vec3* attentuation;
@@ -38,7 +40,8 @@ struct paths {
     float* hit_t;
 };
 
-void setup_paths(paths& p, unsigned int num_paths, int nx, int ny, int ns) {
+void setup_paths(paths& p, int nx, int ny, int ns) {
+    const unsigned num_paths = nx * ny * ns;
     checkCudaErrors(cudaMalloc((void**)& p.r, num_paths * sizeof(ray)));
     checkCudaErrors(cudaMalloc((void**)& p.state, num_paths * sizeof(rand_state)));
     checkCudaErrors(cudaMalloc((void**)& p.attentuation, num_paths * sizeof(vec3)));
@@ -46,17 +49,20 @@ void setup_paths(paths& p, unsigned int num_paths, int nx, int ny, int ns) {
     checkCudaErrors(cudaMalloc((void**)& p.hit_id, num_paths * sizeof(int)));
     checkCudaErrors(cudaMalloc((void**)& p.hit_normal, num_paths * sizeof(vec3)));
     checkCudaErrors(cudaMalloc((void**)& p.hit_t, num_paths * sizeof(float)));
-    checkCudaErrors(cudaMalloc((void**)& p.pixel_id, num_paths * sizeof(unsigned int)));
+    checkCudaErrors(cudaMalloc((void**)& p.all_sample_pool, num_paths * sizeof(unsigned int)));
+    checkCudaErrors(cudaMalloc((void**)& p.next_sample, sizeof(int)));
+
+    p.num_all_samples = num_paths;
 
     // init path_id on host, this way we have more control about how to layout the samples in memory
     {
-        unsigned int* ids = new unsigned int[nx * ny * ns];
+        unsigned int* ids = new unsigned int[num_paths];
         int idx = 0;
         for (size_t y = 0; y < ny; y++)
             for (size_t x = 0; x < nx; x++)
                 for (size_t spp = 0; spp < ns; spp++)
                     ids[idx++] = y * nx + x;
-        checkCudaErrors(cudaMemcpy(p.pixel_id, ids, nx * ns * ny * sizeof(unsigned int), cudaMemcpyHostToDevice));
+        checkCudaErrors(cudaMemcpy(p.all_sample_pool, ids, num_paths * sizeof(unsigned int), cudaMemcpyHostToDevice));
         delete[] ids;
     }
 }
@@ -69,21 +75,22 @@ void free_paths(const paths& p) {
     checkCudaErrors(cudaFree(p.hit_id));
     checkCudaErrors(cudaFree(p.hit_normal));
     checkCudaErrors(cudaFree(p.hit_t));
-    checkCudaErrors(cudaFree(p.pixel_id));
+    checkCudaErrors(cudaFree(p.all_sample_pool));
+    checkCudaErrors(cudaFree(p.next_sample));
 }
 
 __global__ void init(const render_params params, paths p, int frame, const camera cam) {
     const unsigned int tx = threadIdx.x + blockIdx.x * blockDim.x;
     const unsigned int ty = threadIdx.y + blockIdx.y * blockDim.y;
     const unsigned int pid = ty * params.width + tx;
-    if (pid >= params.numpaths)
+    if (pid >= p.num_all_samples)
         return;
 
     // initialize random state
     rand_state state = ((wang_hash(pid) + frame * 101141101) * 336343633) | 1;
 
     // retrieve pixel_id corresponding to current path
-    const unsigned int pixel_id = p.pixel_id[pid];
+    const unsigned int pixel_id = p.all_sample_pool[pid];
 
     // compute sample coordinates
     const unsigned int x = pixel_id % params.width;
@@ -93,12 +100,8 @@ __global__ void init(const render_params params, paths p, int frame, const camer
 
     // generate camera ray
     p.r[pid] = cam.get_ray(u, v, state);
-
-    // save updated random state to memory
     p.state[pid] = state;
-
     p.attentuation[pid] = vec3(1, 1, 1);
-
     p.bounce[pid] = 0;
 }
 
@@ -135,10 +138,10 @@ __global__ void hit_bvh(const render_params params, paths p) {
         if (terminated) {
             // first terminated lane updates the base ray index
             if (idxTerminated == 0)
-                rayBase = atomicAdd(params.warpCounter, numTerminated);
+                rayBase = atomicAdd(p.next_sample, numTerminated);
 
             pid = rayBase + idxTerminated;
-            if (pid >= params.numpaths)
+            if (pid >= p.num_all_samples)
                 return;
 
             // setup ray if path not already terminated
@@ -235,7 +238,7 @@ __global__ void update(const render_params params, paths p) {
     const unsigned int tx = threadIdx.x + blockIdx.x * blockDim.x;
     const unsigned int ty = threadIdx.y + blockIdx.y * blockDim.y;
     const unsigned int pid = ty * params.width + tx;
-    if (pid >= params.numpaths)
+    if (pid >= p.num_all_samples)
         return;
 
     // is the path already done ?
@@ -271,7 +274,7 @@ __global__ void update(const render_params params, paths p) {
         if (bounce > 0) {
             const float sky_emissive = .2f;
             vec3 incoming = p.attentuation[pid] * sky_emissive;
-            const unsigned int pixel_id = p.pixel_id[pid];
+            const unsigned int pixel_id = p.all_sample_pool[pid];
             atomicAdd(params.fb[pixel_id].e, incoming.e[0]);
             atomicAdd(params.fb[pixel_id].e + 1, incoming.e[1]);
             atomicAdd(params.fb[pixel_id].e + 2, incoming.e[2]);
@@ -358,11 +361,9 @@ int main(int argc, char** argv) {
 
     // allocate FB
     vec3 *d_fb;
-    int* d_warpCount;
     checkCudaErrors(cudaMalloc((void **)&d_fb, fb_size));
     checkCudaErrors(cudaMemset(d_fb, 0, fb_size));
 
-    checkCudaErrors(cudaMalloc((void**)&d_warpCount, sizeof(int)));
 
     // load colormap
     vector<vector<float>> data = parse2DCsvFile(colormap);
@@ -384,15 +385,13 @@ int main(int argc, char** argv) {
     vec3* h_fb = new vec3[fb_size];
 
     render_params params;
-    params.numpaths = nx * ny * ns;
-    params.warpCounter = d_warpCount;
     params.fb = d_fb;
     params.sc = sc;
     params.width = nx;
     params.height = ny;
 
     paths p;
-    setup_paths(p, params.numpaths, nx, ny, ns);
+    setup_paths(p, nx, ny, ns);
 
     double render_time = 0;
     for (int r = 0, frame = 0; r < nr; r++, frame ++) {
@@ -404,13 +403,13 @@ int main(int argc, char** argv) {
         // init paths
         {
             dim3 threads(128);
-            dim3 blocks((params.numpaths + 127) / threads.x);
+            dim3 blocks((p.num_all_samples + 127) / threads.x);
             init <<<blocks, threads >>> (params, p, frame, cam);
             checkCudaErrors(cudaGetLastError());
         }
         for (size_t bounce = 0; bounce < kMaxBounces; bounce++) {
             // reset pool counter
-            checkCudaErrors(cudaMemset(params.warpCounter, 0, sizeof(int)));
+            checkCudaErrors(cudaMemset(p.next_sample, 0, sizeof(int)));
 
             // traverse bvh
             {
@@ -424,7 +423,7 @@ int main(int argc, char** argv) {
             // update paths
             {
                 dim3 threads(128);
-                dim3 blocks((params.numpaths + 127) / threads.x);
+                dim3 blocks((p.num_all_samples + 127) / threads.x);
                 update << <blocks, threads >> > (params, p);
                 checkCudaErrors(cudaGetLastError());
             }
@@ -453,7 +452,6 @@ int main(int argc, char** argv) {
     checkCudaErrors(cudaDeviceSynchronize());
     checkCudaErrors(cudaGetLastError());
     checkCudaErrors(cudaFree(params.fb));
-    checkCudaErrors(cudaFree(params.warpCounter));
 
     cudaDeviceReset();
 }
