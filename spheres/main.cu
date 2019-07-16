@@ -13,8 +13,9 @@
 
 const int MaxBlockWidth = 32;
 const int MaxBlockHeight = 2; // block width is 32
-
 const int kMaxBounces = 10;
+const int kMaxActivePaths = 10 * 1000 * 1000;
+
 const int nx = 1200;
 const int ny = 1200;
 
@@ -30,6 +31,11 @@ struct paths {
     unsigned int* all_sample_pool;
     unsigned int num_all_samples;
     int* next_sample;
+
+    // pixel_id of active paths currently being traced by the renderer, it's a subset of all_sample_pool
+    unsigned int* active_paths;
+    unsigned int* num_active_paths; // updated everytime we populate active_paths as we may not have enough samples to fill kMaxActivePaths
+    unsigned int* next_path; // used by hit_bvh() to track next path to fetch and trace
 
     ray* r;
     rand_state* state;
@@ -51,6 +57,12 @@ void setup_paths(paths& p, int nx, int ny, int ns) {
     checkCudaErrors(cudaMalloc((void**)& p.hit_t, num_paths * sizeof(float)));
     checkCudaErrors(cudaMalloc((void**)& p.all_sample_pool, num_paths * sizeof(unsigned int)));
     checkCudaErrors(cudaMalloc((void**)& p.next_sample, sizeof(int)));
+
+    checkCudaErrors(cudaMalloc((void**)& p.active_paths, kMaxActivePaths * sizeof(unsigned int)));
+    checkCudaErrors(cudaMalloc((void**)& p.num_active_paths, sizeof(unsigned int)));
+    checkCudaErrors(cudaMemset((void*)p.num_active_paths, 0, sizeof(unsigned int)));
+    checkCudaErrors(cudaMalloc((void**)& p.next_path, sizeof(unsigned int)));
+    checkCudaErrors(cudaMemset((void*)p.next_path, 0, sizeof(unsigned int)));
 
     p.num_all_samples = num_paths;
 
@@ -77,6 +89,10 @@ void free_paths(const paths& p) {
     checkCudaErrors(cudaFree(p.hit_t));
     checkCudaErrors(cudaFree(p.all_sample_pool));
     checkCudaErrors(cudaFree(p.next_sample));
+
+    checkCudaErrors(cudaFree(p.active_paths));
+    checkCudaErrors(cudaFree(p.num_active_paths));
+    checkCudaErrors(cudaFree(p.next_path));
 }
 
 __global__ void init(const render_params params, paths p, int frame, const camera cam) {
