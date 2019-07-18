@@ -14,7 +14,7 @@
 const int MaxBlockWidth = 32;
 const int MaxBlockHeight = 2; // block width is 32
 const int kMaxBounces = 10;
-const int kMaxActivePaths = 10 * 1000 * 1000;
+const int kMaxActivePaths = 1024 * 1024;
 
 const int nx = 1200;
 const int ny = 1200;
@@ -118,6 +118,7 @@ __global__ void init(const render_params params, paths p, int frame, const camer
         return;
     }
 
+    //TODO we should reuse the state between passes, maybe pass a first flag to only initialize once
     // initialize random state
     rand_state state = ((wang_hash(pid) + frame * 101141101) * 336343633) | 1;
 
