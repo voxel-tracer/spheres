@@ -43,6 +43,8 @@ struct paths {
     int* hit_id;
     vec3* hit_normal;
     float* hit_t;
+
+    unsigned int* metric_num_active_paths;
 };
 
 void setup_paths(paths& p, int nx, int ny, int ns) {
@@ -73,6 +75,8 @@ void setup_paths(paths& p, int nx, int ny, int ns) {
         checkCudaErrors(cudaMemcpy(p.all_sample_pool, ids, p.num_all_samples * sizeof(unsigned int), cudaMemcpyHostToDevice));
         delete[] ids;
     }
+
+    checkCudaErrors(cudaMalloc((void**)& p.metric_num_active_paths, sizeof(unsigned int)));
 }
 
 void free_paths(const paths& p) {
@@ -88,6 +92,8 @@ void free_paths(const paths& p) {
     checkCudaErrors(cudaFree(p.active_paths));
     checkCudaErrors(cudaFree(p.num_active_paths));
     checkCudaErrors(cudaFree(p.next_path));
+
+    checkCudaErrors(cudaFree(p.metric_num_active_paths));
 }
 
 __global__ void init(const render_params params, paths p, int frame, const camera cam) {
@@ -281,6 +287,8 @@ __global__ void update(const render_params params, paths p) {
     const unsigned int pid = threadIdx.x + blockIdx.x * blockDim.x;
     if (pid >= p.num_active_paths[0])
         return;
+    if (pid == 0)
+        p.metric_num_active_paths[0] = 0;
 
     // is the path already done ?
     unsigned int bounce = p.bounce[pid];
@@ -328,6 +336,14 @@ __global__ void update(const render_params params, paths p) {
     }
 
     p.bounce[pid] = bounce;
+
+    atomicAdd(p.metric_num_active_paths, 1);
+}
+
+__global__ void print_metrics(paths p, unsigned int frame, unsigned int bounce) {
+    unsigned int metric_num_active_paths = p.metric_num_active_paths[0];
+    unsigned int ratio = 100.0 * metric_num_active_paths / p.num_active_paths[0];
+    printf("frame %2d, bounce %2d: metric_num_active_paths = %d (%2d%%)\n", frame, bounce, metric_num_active_paths, ratio);
 }
 
 float rand(unsigned int &state) {
@@ -465,6 +481,11 @@ int main(int argc, char** argv) {
                 dim3 threads(128);
                 dim3 blocks((kMaxActivePaths + 127) / threads.x);
                 update << <blocks, threads >> > (params, p);
+                checkCudaErrors(cudaGetLastError());
+            }
+            // print metrics
+            {
+                print_metrics <<<1, 1 >>> (p, frame, bounce);
                 checkCudaErrors(cudaGetLastError());
             }
         }
