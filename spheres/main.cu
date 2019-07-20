@@ -14,7 +14,6 @@
 const int MaxBlockWidth = 32;
 const int MaxBlockHeight = 2; // block width is 32
 const int kMaxBounces = 10;
-const int kMaxActivePaths = 1024 * 1024;
 
 const int nx = 1200;
 const int ny = 1200;
@@ -24,16 +23,17 @@ struct render_params {
     scene sc;
     unsigned int width;
     unsigned int height;
+    unsigned int maxActivePaths;
 };
 
 struct paths {
     // pixel_id of all samples that need to be traced by the renderer
     unsigned int* all_sample_pool;
     unsigned int num_all_samples;
+    unsigned int* next_sample; // used by init() to track next sample to fetch
 
     // pixel_id of active paths currently being traced by the renderer, it's a subset of all_sample_pool
     unsigned int* active_paths;
-    unsigned int* num_active_paths; // updated everytime we populate active_paths as we may not have enough samples to fill kMaxActivePaths
     unsigned int* next_path; // used by hit_bvh() to track next path to fetch and trace
 
     ray* r;
@@ -47,9 +47,9 @@ struct paths {
     unsigned int* metric_num_active_paths;
 };
 
-void setup_paths(paths& p, int nx, int ny, int ns) {
+void setup_paths(paths& p, int nx, int ny, int ns, unsigned int maxActivePaths) {
     // at any given moment only kMaxActivePaths at most are active at the same time
-    const unsigned num_paths = kMaxActivePaths;
+    const unsigned num_paths = maxActivePaths;
     checkCudaErrors(cudaMalloc((void**)& p.r, num_paths * sizeof(ray)));
     checkCudaErrors(cudaMalloc((void**)& p.state, num_paths * sizeof(rand_state)));
     checkCudaErrors(cudaMalloc((void**)& p.attentuation, num_paths * sizeof(vec3)));
@@ -59,8 +59,10 @@ void setup_paths(paths& p, int nx, int ny, int ns) {
     checkCudaErrors(cudaMalloc((void**)& p.hit_t, num_paths * sizeof(float)));
 
     checkCudaErrors(cudaMalloc((void**)& p.active_paths, num_paths * sizeof(unsigned int)));
-    checkCudaErrors(cudaMalloc((void**)& p.num_active_paths, sizeof(unsigned int)));
     checkCudaErrors(cudaMalloc((void**)& p.next_path, sizeof(unsigned int)));
+
+    checkCudaErrors(cudaMalloc((void**)& p.next_sample, sizeof(unsigned int)));
+    checkCudaErrors(cudaMemset((void*)p.next_sample, 0, sizeof(unsigned int)));
 
     // init path_id on host, this way we have more control about how to layout the samples in memory
     p.num_all_samples = nx * ny * ns;
@@ -88,67 +90,76 @@ void free_paths(const paths& p) {
     checkCudaErrors(cudaFree(p.hit_normal));
     checkCudaErrors(cudaFree(p.hit_t));
     checkCudaErrors(cudaFree(p.all_sample_pool));
+    checkCudaErrors(cudaFree(p.next_sample));
 
     checkCudaErrors(cudaFree(p.active_paths));
-    checkCudaErrors(cudaFree(p.num_active_paths));
     checkCudaErrors(cudaFree(p.next_path));
 
     checkCudaErrors(cudaFree(p.metric_num_active_paths));
 }
 
-__global__ void init(const render_params params, paths p, int frame, const camera cam) {
+__global__ void init(const render_params params, paths p, bool first, const camera cam) {
     // kMaxActivePaths threads are started to fetch the samples from all_sample_pool and initialize the paths
+    // to keep things simple a block contains a single warp so that we only need to keep a single shared nextSample per block
+
     const unsigned int pid = threadIdx.x + blockIdx.x * blockDim.x;
-    if (pid >= kMaxActivePaths)
-        return;
-
-    // each frame we are picking kMaxActivePaths samples to trace
-    // first sample to be traced in this frame is first_sample = (kMaxActivePaths * frame)
-    // current sample to be traced by this lane is sid = first_sample + pid
-    
-    // update p.num_active_paths accordingly
     if (pid == 0) {
+        p.metric_num_active_paths[0] = 0;
         p.next_path[0] = 0;
-
-        // last sample to be processed is going to be last_sample = min(p.num_all_samples, kMaxActivePaths * (frame + 1) - 1)
-        const unsigned int first_sample = kMaxActivePaths * frame;
-        const unsigned int last_sample = min(kMaxActivePaths * (frame + 1), p.num_all_samples) - 1;
-        p.num_active_paths[0] = last_sample - first_sample + 1;
     }
 
-    // compute sample this lane is going to fetch
-    const unsigned int sid = kMaxActivePaths * frame + pid;
-    if (sid >= p.num_all_samples) {
-        // mark path as terminated
-        p.bounce[pid] = kMaxBounces;
+    if (pid >= params.maxActivePaths)
         return;
+
+    rand_state state;
+    unsigned int bounce;
+    if (first) {
+        // this is the very first init, all paths are marked terminated, and we don't have a valid random state yet
+        state = (wang_hash(pid) * 336343633) | 1;
+        bounce = kMaxBounces;
+    } else {
+        state = p.state[pid];
+        bounce = p.bounce[pid];
     }
 
-    //TODO we should reuse the state between passes, maybe pass a first flag to only initialize once
-    // initialize random state
-    rand_state state = ((wang_hash(pid) + frame * 101141101) * 336343633) | 1;
+    // generate all terminated paths
+    const bool          terminated     = bounce == kMaxBounces;
+    const unsigned int  maskTerminated = __ballot_sync(__activemask(), terminated);
+    const int           numTerminated  = __popc(maskTerminated);
+    const int           idxTerminated  = __popc(maskTerminated & ((1u << threadIdx.x) - 1));
 
-    // TODO we should be able to compute (x, y, s) from sample_id as follows:
-    // s = sample_id % ns
-    // x = (sample_id - s) % nx
-    // y = (sample_id - s) / nx
-    // Note that we still need the sample_pool to allow update() to replace terminated paths with new samples
+    __shared__ volatile unsigned int nextSample;
 
-    // retrieve pixel_id corresponding to current path
-    const unsigned int pixel_id = p.all_sample_pool[sid];
-    p.active_paths[pid] = pixel_id;
+    if (terminated) {
+        // first terminated lane increments next_sample
+        if (idxTerminated == 0)
+            nextSample = atomicAdd(p.next_sample, numTerminated);
 
-    // compute pixel coordinates
-    const unsigned int x = pixel_id % params.width;
-    const unsigned int y = pixel_id / params.width;
+        // compute sample this lane is going to fetch
+        const unsigned int sid = nextSample + idxTerminated;
+        if (sid >= p.num_all_samples)
+            return; // no more samples to fetch
 
-    // generate camera ray
-    float u = float(x + random_float(state)) / float(params.width);
-    float v = float(y + random_float(state)) / float(params.height);
-    p.r[pid] = cam.get_ray(u, v, state);
-    p.state[pid] = state;
-    p.attentuation[pid] = vec3(1, 1, 1);
-    p.bounce[pid] = 0;
+        // retrieve pixel_id corresponding to current path
+        const unsigned int pixel_id = p.all_sample_pool[sid];
+        p.active_paths[pid] = pixel_id;
+
+        // compute pixel coordinates
+        const unsigned int x = pixel_id % params.width;
+        const unsigned int y = pixel_id / params.width;
+
+        // generate camera ray
+        float u = float(x + random_float(state)) / float(params.width);
+        float v = float(y + random_float(state)) / float(params.height);
+        p.r[pid] = cam.get_ray(u, v, state);
+        p.state[pid] = state;
+        p.attentuation[pid] = vec3(1, 1, 1);
+        p.bounce[pid] = 0;
+    }
+
+    // path still active or has just been generated
+    //TODO each warp uses activemask() to count number active lanes then just 1st active lane need to update the metric
+    atomicAdd(p.metric_num_active_paths, 1);
 }
 
 __global__ void hit_bvh(const render_params params, paths p) {
@@ -189,7 +200,7 @@ __global__ void hit_bvh(const render_params params, paths p) {
                 pathBase = atomicAdd(p.next_path, numTerminated);
 
             pid = pathBase + idxTerminated;
-            if (pid >= p.num_active_paths[0])
+            if (pid >= params.maxActivePaths)
                 return;
 
             // setup ray if path not already terminated
@@ -285,18 +296,13 @@ __global__ void hit_bvh(const render_params params, paths p) {
 __global__ void update(const render_params params, paths p) {
     // kMaxActivePaths threads update all p.num_active_paths
     const unsigned int pid = threadIdx.x + blockIdx.x * blockDim.x;
-    if (pid >= p.num_active_paths[0])
+    if (pid >= params.maxActivePaths)
         return;
-    if (pid == 0)
-        p.metric_num_active_paths[0] = 0;
 
     // is the path already done ?
     unsigned int bounce = p.bounce[pid];
     if (bounce == kMaxBounces)
         return; // yup, done and already taken care of
-    // TODO better approach is to replace terminated paths with new samples from all_sample_pool
-    // in that case we can get rid of init() all together as long as the initial value for bounce kMaxBounce or we pass a special flag to update() 
-    // to mark the very first run
 
     // did the ray hit a primitive ?
     const int hit_id = p.hit_id[pid];
@@ -336,14 +342,12 @@ __global__ void update(const render_params params, paths p) {
     }
 
     p.bounce[pid] = bounce;
-
-    atomicAdd(p.metric_num_active_paths, 1);
 }
 
-__global__ void print_metrics(paths p, unsigned int frame, unsigned int bounce) {
+__global__ void print_metrics(paths p, unsigned int iteration, unsigned int maxActivePaths) {
     unsigned int metric_num_active_paths = p.metric_num_active_paths[0];
-    unsigned int ratio = 100.0 * metric_num_active_paths / p.num_active_paths[0];
-    printf("frame %2d, bounce %2d: metric_num_active_paths = %d (%2d%%)\n", frame, bounce, metric_num_active_paths, ratio);
+    unsigned int ratio = 100.0 * metric_num_active_paths / maxActivePaths;
+    printf("iteration %4d: metric_num_active_paths = %d (%2d%%)\n", iteration, metric_num_active_paths, ratio);
 }
 
 float rand(unsigned int &state) {
@@ -402,17 +406,20 @@ int cmpfunc(const void * a, const void * b) {
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        cerr << "usage spheres file_name [num_samples=1] [camera_dist=100] [colormap=viridis.csv]";
+        cerr << "usage spheres file_name [num_samples=1] [camera_dist=100] [maxActivePaths=1M] [numBouncesPerIter=4] [colormap=viridis.csv] [verbose]";
         exit(-1);
     }
     char* input = argv[1];
     const int ns = (argc > 2) ? strtol(argv[2], NULL, 10) : 1;
     const int dist = (argc > 3) ? strtof(argv[3], NULL) : 100;
-    const char* colormap = (argc > 4) ? argv[4] : "viridis.csv";
+    const int maxActivePaths = (argc > 4) ? strtol(argv[4], NULL, 10) : (1024 * 1024);
+    const int numBouncesPerIter = (argc > 5) ? strtol(argv[5], NULL, 10) : 4;
+    const char* colormap = (argc > 6) ? argv[6] : "viridis.csv";
+    const bool verbose = (argc > 7 && !strcmp(argv[7], "verbose"));
 
     const bool is_csv = strncmp(input + strlen(input) - 4, ".csv", 4) == 0;
     
-    cerr << "Rendering a " << nx << "x" << ny << " image with " << ns << " samples per pixel\n";
+    cerr << "Rendering a " << nx << "x" << ny << " image with " << ns << " samples per pixel, maxActivePaths = " << maxActivePaths << ", numBouncesPerIter = " << numBouncesPerIter << "\n";
 
     int num_pixels = nx * ny;
     size_t fb_size = num_pixels * sizeof(vec3);
@@ -447,48 +454,58 @@ int main(int argc, char** argv) {
     params.sc = sc;
     params.width = nx;
     params.height = ny;
+    params.maxActivePaths = maxActivePaths;
 
     paths p;
-    setup_paths(p, nx, ny, ns);
+    setup_paths(p, nx, ny, ns, maxActivePaths);
 
-    cout << "started renderer\n";
+    cout << "started renderer\n" << std::flush;
     clock_t start = clock();
     cudaProfilerStart();
-    for (unsigned int s = 0, frame = 0; s < p.num_all_samples; s += kMaxActivePaths, frame++) {
+
+    unsigned int iteration = 0;
+    while (true) {
 
         // init kMaxActivePaths using equal number of threads
         {
-            dim3 threads(128);
-            dim3 blocks((kMaxActivePaths + 127) / threads.x);
-            init <<<blocks, threads >>> (params, p, frame, cam);
+            const int threads = 32; // 1 warp per block
+            const int blocks = (maxActivePaths + threads - 1) / threads;
+            init << <blocks, threads >> > (params, p, iteration == 0, cam);
             checkCudaErrors(cudaGetLastError());
         }
-        for (size_t bounce = 0; bounce < kMaxBounces; bounce++) {
-            // reset pool counter
-            checkCudaErrors(cudaMemset(p.next_path, 0, sizeof(int)));
 
-            // traverse bvh
-            {
-                // visual profiler shows that we can only run 40 warps per SM, and I have 5 SMs so I can run a total of
-                // 5*40*32 = 6400. Run twice as much to give the device enough thread to hide memory latency
-                dim3 blocks(6400 * 2, 1);
-                dim3 threads(MaxBlockWidth, MaxBlockHeight);
-                hit_bvh << <blocks, threads >> > (params, p);
-                checkCudaErrors(cudaGetLastError());
-            }
-            // update kMaxActivePaths using equal number of threads
-            {
-                dim3 threads(128);
-                dim3 blocks((kMaxActivePaths + 127) / threads.x);
-                update << <blocks, threads >> > (params, p);
-                checkCudaErrors(cudaGetLastError());
-            }
-            // print metrics
-            {
-                print_metrics <<<1, 1 >>> (p, frame, bounce);
-                checkCudaErrors(cudaGetLastError());
+        // check if not all paths terminated
+        // we don't want to check the metric after each bounce, we do it every numBouncesPerIter iterations
+        if (iteration > 0 && (iteration % numBouncesPerIter) == 0) {
+            unsigned int num_active_paths;
+            checkCudaErrors(cudaMemcpy((void*)& num_active_paths, (void*)p.metric_num_active_paths, sizeof(unsigned int), cudaMemcpyDeviceToHost));
+            if (num_active_paths == 0) {
+                break;
             }
         }
+
+        // traverse bvh
+        {
+            dim3 blocks(6400 * 2, 1);
+            dim3 threads(MaxBlockWidth, MaxBlockHeight);
+            hit_bvh << <blocks, threads >> > (params, p);
+            checkCudaErrors(cudaGetLastError());
+        }
+        // update kMaxActivePaths using equal number of threads
+        {
+            const int threads = 128;
+            const int blocks = (maxActivePaths + threads - 1) / threads;
+            update << <blocks, threads >> > (params, p);
+            checkCudaErrors(cudaGetLastError());
+        }
+        // print metrics
+        if (verbose) {
+            print_metrics << <1, 1 >> > (p, iteration, maxActivePaths);
+            checkCudaErrors(cudaGetLastError());
+        }
+        checkCudaErrors(cudaDeviceSynchronize());
+
+        iteration++;
     }
     cudaProfilerStop();
 
