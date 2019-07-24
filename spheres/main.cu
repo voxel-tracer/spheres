@@ -294,6 +294,12 @@ __global__ void hit_bvh(const render_params params, paths p) {
 }
 
 __global__ void update(const render_params params, paths p) {
+
+    const vec3 light_center(5000, 0, 0);
+    const float light_radius = 500;
+    const float light_emissive = 100;
+    const float sky_emissive = .2f;
+
     // kMaxActivePaths threads update all p.num_active_paths
     const unsigned int pid = threadIdx.x + blockIdx.x * blockDim.x;
     if (pid >= params.maxActivePaths)
@@ -330,8 +336,13 @@ __global__ void update(const render_params params, paths p) {
     else {
         // primary rays (bounce = 0) return black
         if (bounce > 0) {
-            const float sky_emissive = .2f;
-            vec3 incoming = p.attentuation[pid] * sky_emissive;
+            const vec3 attenuation = p.attentuation[pid];
+            vec3 incoming;
+            if (hit_light(light_center, light_radius, p.r[pid], 0.001f, FLT_MAX))
+                incoming = attenuation * light_emissive;
+            else
+                incoming = attenuation * sky_emissive;
+
             const unsigned int pixel_id = p.active_paths[pid];
             atomicAdd(params.fb[pixel_id].e, incoming.e[0]);
             atomicAdd(params.fb[pixel_id].e + 1, incoming.e[1]);
