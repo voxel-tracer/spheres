@@ -23,13 +23,11 @@ struct render_params {
     scene sc;
     unsigned int width;
     unsigned int height;
+    unsigned int spp;
     unsigned int maxActivePaths;
 };
 
 struct paths {
-    // pixel_id of all samples that need to be traced by the renderer
-    unsigned int* all_sample_pool;
-    unsigned int num_all_samples;
     unsigned int* next_sample; // used by init() to track next sample to fetch
 
     // pixel_id of active paths currently being traced by the renderer, it's a subset of all_sample_pool
@@ -63,21 +61,6 @@ void setup_paths(paths& p, int nx, int ny, int ns, unsigned int maxActivePaths) 
 
     checkCudaErrors(cudaMalloc((void**)& p.next_sample, sizeof(unsigned int)));
     checkCudaErrors(cudaMemset((void*)p.next_sample, 0, sizeof(unsigned int)));
-
-    // init path_id on host, this way we have more control about how to layout the samples in memory
-    p.num_all_samples = nx * ny * ns;
-    {
-        unsigned int* ids = new unsigned int[p.num_all_samples];
-        int idx = 0;
-        for (size_t y = 0; y < ny; y++)
-            for (size_t x = 0; x < nx; x++)
-                for (size_t spp = 0; spp < ns; spp++)
-                    ids[idx++] = y * nx + x;
-        checkCudaErrors(cudaMalloc((void**)& p.all_sample_pool, p.num_all_samples * sizeof(unsigned int)));
-        checkCudaErrors(cudaMemcpy(p.all_sample_pool, ids, p.num_all_samples * sizeof(unsigned int), cudaMemcpyHostToDevice));
-        delete[] ids;
-    }
-
     checkCudaErrors(cudaMalloc((void**)& p.metric_num_active_paths, sizeof(unsigned int)));
 }
 
@@ -89,7 +72,6 @@ void free_paths(const paths& p) {
     checkCudaErrors(cudaFree(p.hit_id));
     checkCudaErrors(cudaFree(p.hit_normal));
     checkCudaErrors(cudaFree(p.hit_t));
-    checkCudaErrors(cudaFree(p.all_sample_pool));
     checkCudaErrors(cudaFree(p.next_sample));
 
     checkCudaErrors(cudaFree(p.active_paths));
@@ -136,12 +118,13 @@ __global__ void init(const render_params params, paths p, bool first, const came
             nextSample = atomicAdd(p.next_sample, numTerminated);
 
         // compute sample this lane is going to fetch
-        const unsigned int sid = nextSample + idxTerminated;
-        if (sid >= p.num_all_samples)
+        const unsigned int sample_id = nextSample + idxTerminated;
+        const unsigned int num_all_samples = params.width * params.height * params.spp;
+        if (sample_id >= num_all_samples)
             return; // no more samples to fetch
 
         // retrieve pixel_id corresponding to current path
-        const unsigned int pixel_id = p.all_sample_pool[sid];
+        const unsigned int pixel_id = sample_id / params.spp;
         p.active_paths[pid] = pixel_id;
 
         // compute pixel coordinates
@@ -465,6 +448,7 @@ int main(int argc, char** argv) {
     params.sc = sc;
     params.width = nx;
     params.height = ny;
+    params.spp = ns;
     params.maxActivePaths = maxActivePaths;
 
     paths p;
@@ -521,7 +505,7 @@ int main(int argc, char** argv) {
     cudaProfilerStop();
 
     checkCudaErrors(cudaDeviceSynchronize());
-    cerr << "rendered " << p.num_all_samples << " samples in " << (float)(clock() - start) / CLOCKS_PER_SEC << " seconds.\r";
+    cerr << "rendered " << (params.width* params.height* params.spp) << " samples in " << (float)(clock() - start) / CLOCKS_PER_SEC << " seconds.\r";
 
     // Output FB as Image
     checkCudaErrors(cudaMemcpy(h_fb, d_fb, fb_size, cudaMemcpyDeviceToHost));
