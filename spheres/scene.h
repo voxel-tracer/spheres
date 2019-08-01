@@ -90,16 +90,21 @@ struct bvh_node {
     __host__ bvh_node(const vec3& A, const vec3& B) :a(A), b(B) {}
     __device__ bvh_node(float x0, float y0, float z0, float x1, float y1, float z1) : a(x0, y0, z0), b(x1, y1, z1) {}
 
-    __device__ vec3 min() const { return a; }
-    __device__ vec3 max() const { return b; }
-    __device__ vec3 left() const { return a; }
-    __device__ vec3 right() const { return b; }
+    __host__ __device__ vec3 min() const { return a; }
+    __host__ __device__ vec3 max() const { return b; }
+    __host__ __device__ vec3 left() const { return a; }
+    __host__ __device__ vec3 right() const { return b; }
 
     __host__ __device__ unsigned int split_axis() const { return max_component(b - a); }
 
     vec3 a;
     vec3 b;
 };
+
+ostream& operator << (ostream& out, const bvh_node& node) {
+    out << "{" << node.min() << ", " << node.max() << "}";
+    return out;
+}
 
 // step 1: allocate memory for the constant part
 __device__ __constant__ bvh_node d_nodes[2048];
@@ -126,15 +131,30 @@ float drand48() {
 }
 
 int box_x_compare(const void* a, const void* b) {
-    return (*(sphere*)a).center[0] - (*(sphere*)b).center[0];
+    float xa = ((sphere*)a)->center.x();
+    float xb = ((sphere*)b)->center.x();
+
+    if (xa < xb) return -1;
+    else if (xb < xa) return 1;
+    return 0;
 }
 
 int box_y_compare(const void* a, const void* b) {
-    return (*(sphere*)a).center[1] - (*(sphere*)b).center[1];
+    float ya = ((sphere*)a)->center.y();
+    float yb = ((sphere*)b)->center.y();
+
+    if (ya < yb) return -1;
+    else if (yb < ya) return 1;
+    return 0;
 }
 
 int box_z_compare(const void* a, const void* b) {
-    return (*(sphere*)a).center[2] - (*(sphere*)b).center[2];
+    float za = ((sphere*)a)->center.z();
+    float zb = ((sphere*)b)->center.z();
+
+    if (za < zb) return -1;
+    else if (zb < za) return 1;
+    return 0;
 }
 
 vec3 minof(const sphere *l, int n) {
@@ -167,6 +187,18 @@ void build_bvh(bvh_node *nodes, int idx, sphere *l, int n) {
             qsort(l, n, sizeof(sphere), box_y_compare);
         else
             qsort(l, n, sizeof(sphere), box_z_compare);
+
+        // assert that we can compute split_axis from children nodes
+        //const bvh_node left(minof(l, n / 2), maxof(l, n / 2));
+        //const bvh_node right(minof(l + n / 2, n / 2), maxof(l + n / 2, n / 2));
+        //unsigned int computed_axis = max_component(right.max() - left.min());
+        //if (computed_axis != axis) {
+        //    cout << "expected " << axis << ", but got " << computed_axis << endl;
+        //    cout << "parent: " << nodes[idx] << endl;
+        //    cout << "left: " << left << endl;
+        //    cout << "right: " << right << endl;
+        //}
+        //assert(computed_axis == axis);
 
         build_bvh(nodes, idx * 2, l, n / 2);
         build_bvh(nodes, idx * 2 + 1, l + n / 2, n / 2);
@@ -354,87 +386,6 @@ void releaseScene(scene& sc) {
     checkCudaErrors(cudaFree(sc.colors));
 }
 
-__device__ bool hit_bvh(const scene& sc, const ray& r, float t_min, float t_max, hit_record &rec) {
-
-    bool down = true;
-    int idx = 1;
-    bool found = false;
-    float closest = t_max;
-
-    unsigned int move_bit_stack = 0;
-    int lvl = 0;
-
-#ifdef COUNT_BVH
-    atomicAdd(sc.counters, 1); // count how many rays reached this method
-#endif
-
-    while (true) {
-        if (down) {
-            bvh_node node;
-            if (idx < 2048) {
-                node = d_nodes[idx];
-            }
-            else {
-                unsigned int tex_idx = (idx - 2048) * 3;
-                float2 a = tex1Dfetch(t_bvh, tex_idx++);
-                float2 b = tex1Dfetch(t_bvh, tex_idx++);
-                float2 c = tex1Dfetch(t_bvh, tex_idx++);
-
-                node = bvh_node(a.x, a.y, b.x, b.y, c.x, c.y);
-            }
-
-#ifdef COUNT_BVH
-            atomicAdd(sc.counters + lvl + 1, 1);
-#endif
-            if (hit_bbox(node, r, t_min, closest)) {
-                if (idx >= sc.count) { // leaf node
-#ifdef COUNT_BVH
-                    atomicAdd(sc.counters + lvl + 2, 1);
-#endif
-                    int m = (idx - sc.count) * lane_size_float;
-                    #pragma unroll
-                    for (int i = 0; i < lane_size_spheres; i++) {
-                        vec3 center(sc.spheres[m++], sc.spheres[m++], sc.spheres[m++]);
-                        if (hit_point(center, r, t_min, closest, rec)) {
-                            found = true;
-                            closest = rec.t;
-                            rec.idx = (idx - sc.count)*lane_size_spheres + i;
-                        }
-                    }
-                    down = false;
-                }
-                else {
-                    // current -> left
-                    const int move_left = signbit(r.direction()[node.split_axis()]);
-                    move_bit_stack &= ~(1 << lvl); // clear previous bit
-                    move_bit_stack |= move_left << lvl;
-                    idx = idx * 2 + move_left;
-                    lvl++;
-                }
-            }
-            else {
-                down = false;
-            }
-        }
-        else if (idx == 1) {
-            break;
-        }
-        else {
-            const int move_left = (move_bit_stack >> (lvl - 1)) & 1;
-            const int left_idx = move_left;
-            if ((idx % 2) == left_idx) { // left -> right
-                idx += -2 * left_idx + 1; // node = node.sibling
-                down = true;
-            }
-            else { // right -> parent
-                lvl--;
-                idx = idx / 2; // node = node.parent
-            }
-        }
-    }
-
-    return found;
-}
 /*
 __device__ bool shadow_bvh(const scene& sc, const ray& r, float t_min, float t_max) {
 
