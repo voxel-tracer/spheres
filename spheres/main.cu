@@ -158,8 +158,7 @@ __global__ void hit_bvh(const render_params params, paths p) {
     float closest = FLT_MAX;
     hit_record rec;
 
-    unsigned int move_bit_stack = 0;
-    int lvl = 0;
+    unsigned int bitstack = 0;
 
     // Initialize persistent threads.
     // given that each block is 32 thread wide, we can use threadIdx.x as a warpId
@@ -196,8 +195,7 @@ __global__ void hit_bvh(const render_params params, paths p) {
                 idx = 1;
                 found = false;
                 closest = FLT_MAX;
-                move_bit_stack = 0;
-                lvl = 0;
+                bitstack = 0;
             }
         }
 
@@ -233,10 +231,8 @@ __global__ void hit_bvh(const render_params params, paths p) {
                     else {
                         // current -> left
                         const int move_left = signbit(r.direction()[node.split_axis()]);
-                        move_bit_stack &= ~(1 << lvl); // clear previous bit
-                        move_bit_stack |= move_left << lvl;
+                        bitstack = (bitstack << 1) + move_left;
                         idx = idx * 2 + move_left;
-                        lvl++;
                     }
                 }
                 else {
@@ -247,14 +243,14 @@ __global__ void hit_bvh(const render_params params, paths p) {
                 break;
             }
             else {
-                const int move_left = (move_bit_stack >> (lvl - 1)) & 1;
+                const int move_left = bitstack & 1;
                 const int left_idx = move_left;
                 if ((idx % 2) == left_idx) { // left -> right
                     idx += -2 * left_idx + 1; // node = node.sibling
                     down = true;
                 }
                 else { // right -> parent
-                    lvl--;
+                    bitstack = bitstack >> 1;
                     idx = idx / 2; // node = node.parent
                 }
             }
