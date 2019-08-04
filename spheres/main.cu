@@ -249,7 +249,6 @@ __global__ void hit_bvh(const render_params params, paths p) {
                 pop_bitstack(bitstack, idx);
             }
             else {
-                //TODO should we interleave loading left, check hit left, loading right, check hit right ?
                 // load left, right nodes
                 bvh_node left, right;
                 const int idx2 = idx * 2; // we are going to load and intersect children of idx
@@ -258,15 +257,13 @@ __global__ void hit_bvh(const render_params params, paths p) {
                     right = d_nodes[idx2 + 1];
                 }
                 else {
-                    unsigned int tex_idx = (idx2 - 2048) * 3;
-                    float2 a = tex1Dfetch(t_bvh, tex_idx++);
-                    float2 b = tex1Dfetch(t_bvh, tex_idx++);
-                    float2 c = tex1Dfetch(t_bvh, tex_idx++);
-                    left = bvh_node(a.x, a.y, b.x, b.y, c.x, c.y);
-                    a = tex1Dfetch(t_bvh, tex_idx++);
-                    b = tex1Dfetch(t_bvh, tex_idx++);
-                    c = tex1Dfetch(t_bvh, tex_idx++);
-                    right = bvh_node(a.x, a.y, b.x, b.y, c.x, c.y);
+                    // each spot in the texture holds two children, that's why we devide the relative texture index by 2
+                    unsigned int tex_idx = ((idx2 - 2048) >> 1) * 3;
+                    float4 a = tex1Dfetch(t_bvh, tex_idx++);
+                    float4 b = tex1Dfetch(t_bvh, tex_idx++);
+                    float4 c = tex1Dfetch(t_bvh, tex_idx++);
+                    left = bvh_node(a.x, a.y, a.z, a.w, b.x, b.y);
+                    right = bvh_node(b.z, b.w, c.x, c.y, c.z, c.w);
                 }
 
                 const float left_t = hit_bbox(left, r, closest);

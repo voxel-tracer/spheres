@@ -110,7 +110,7 @@ ostream& operator << (ostream& out, const bvh_node& node) {
 __device__ __constant__ bvh_node d_nodes[2048];
 __device__ __constant__ float d_colormap[256 * 3];
 
-texture<float2> t_bvh;
+texture<float4> t_bvh;
 float* d_bvh_buf;
 
 struct scene {
