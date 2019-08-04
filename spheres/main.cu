@@ -217,16 +217,17 @@ __global__ void hit_bvh(const render_params params, paths p) {
                 // Fetch ray
                 r = p.r[pid];
 
-                // setup traversal
-                idx = 1;
-                found = false;
-                closest = FLT_MAX;
-                bitstack = 0;
 
-                // check if ray intersects root bvh node
+                // idx is already set to IDX_SENTINEL, but make sure we set found to false
+                found = false;
+
+                // setup traversal if ray intersects root node
                 float hit_t;
-                if (!hit_bbox(d_nodes[idx], r, FLT_MAX, hit_t))
-                    idx = IDX_SENTINEL;
+                if (hit_bbox(d_nodes[1], r, FLT_MAX, hit_t)) {
+                    idx = 1;
+                    closest = FLT_MAX;
+                    bitstack = 0;
+                }
             }
         }
 
