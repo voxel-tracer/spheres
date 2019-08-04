@@ -347,7 +347,7 @@ void setup_scene(char *input, scene &sc, bool csv, float *colormap) {
     delete[] colors;
 }
 
-__device__ bool hit_bbox(const bvh_node& node, const ray& r, float t_max, float& hit_t) {
+__device__ float hit_bbox(const bvh_node& node, const ray& r, float t_max) {
     float t_min = 0.001f;
     for (int a = 0; a < 3; a++) {
         float invD = 1.0f / r.direction()[a];
@@ -359,11 +359,10 @@ __device__ bool hit_bbox(const bvh_node& node, const ray& r, float t_max, float&
         t_min = t0 > t_min ? t0 : t_min;
         t_max = t1 < t_max ? t1 : t_max;
         if (t_max <= t_min)
-            return false;
+            return FLT_MAX;
     }
 
-    hit_t = t_min;
-    return true;
+    return t_min;
 }
 
 void releaseScene(scene& sc) {

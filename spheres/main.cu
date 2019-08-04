@@ -222,8 +222,7 @@ __global__ void hit_bvh(const render_params params, paths p) {
                 found = false;
 
                 // setup traversal if ray intersects root node
-                float hit_t;
-                if (hit_bbox(d_nodes[1], r, FLT_MAX, hit_t)) {
+                if (hit_bbox(d_nodes[1], r, FLT_MAX) < FLT_MAX) {
                     idx = 1;
                     closest = FLT_MAX;
                     bitstack = 0;
@@ -270,12 +269,12 @@ __global__ void hit_bvh(const render_params params, paths p) {
                     right = bvh_node(a.x, a.y, b.x, b.y, c.x, c.y);
                 }
 
-                float left_t = FLT_MAX;
-                bool traverse_left = hit_bbox(left, r, closest, left_t);
-                float right_t = FLT_MAX;
-                bool traverse_right = hit_bbox(right, r, closest, right_t);
+                const float left_t = hit_bbox(left, r, closest);
+                const bool traverse_left = left_t < FLT_MAX;
+                const float right_t = hit_bbox(right, r, closest);
+                const bool traverse_right = right_t < FLT_MAX;
 
-                bool swap = right_t < left_t; // right child is closer
+                const bool swap = right_t < left_t; // right child is closer
 
                 if (traverse_left || traverse_right) {
                     idx = idx2 + swap; // intersect closer node next
