@@ -28,7 +28,7 @@ struct render_params {
 };
 
 struct paths {
-    unsigned int* next_sample; // used by init() to track next sample to fetch
+    unsigned long long* next_sample; // used by init() to track next sample to fetch
 
     // pixel_id of active paths currently being traced by the renderer, it's a subset of all_sample_pool
     unsigned int* active_paths;
@@ -59,8 +59,8 @@ void setup_paths(paths& p, int nx, int ny, int ns, unsigned int maxActivePaths) 
     checkCudaErrors(cudaMalloc((void**)& p.active_paths, num_paths * sizeof(unsigned int)));
     checkCudaErrors(cudaMalloc((void**)& p.next_path, sizeof(unsigned int)));
 
-    checkCudaErrors(cudaMalloc((void**)& p.next_sample, sizeof(unsigned int)));
-    checkCudaErrors(cudaMemset((void*)p.next_sample, 0, sizeof(unsigned int)));
+    checkCudaErrors(cudaMalloc((void**)& p.next_sample, sizeof(unsigned long)));
+    checkCudaErrors(cudaMemset((void*)p.next_sample, 0, sizeof(unsigned long)));
     checkCudaErrors(cudaMalloc((void**)& p.metric_num_active_paths, sizeof(unsigned int)));
 }
 
@@ -110,7 +110,7 @@ __global__ void init(const render_params params, paths p, bool first, const came
     const int           numTerminated  = __popc(maskTerminated);
     const int           idxTerminated  = __popc(maskTerminated & ((1u << threadIdx.x) - 1));
 
-    __shared__ volatile unsigned int nextSample;
+    __shared__ volatile unsigned long long nextSample;
 
     if (terminated) {
         // first terminated lane increments next_sample
@@ -118,8 +118,8 @@ __global__ void init(const render_params params, paths p, bool first, const came
             nextSample = atomicAdd(p.next_sample, numTerminated);
 
         // compute sample this lane is going to fetch
-        const unsigned int sample_id = nextSample + idxTerminated;
-        const unsigned int num_all_samples = params.width * params.height * params.spp;
+        const unsigned long long sample_id = nextSample + idxTerminated;
+        const unsigned long long num_all_samples = ((unsigned long long) params.width) * params.height * params.spp;
         if (sample_id >= num_all_samples)
             return; // no more samples to fetch
 
