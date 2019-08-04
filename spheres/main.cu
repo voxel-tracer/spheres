@@ -145,6 +145,34 @@ __global__ void init(const render_params params, paths p, bool first, const came
     atomicAdd(p.metric_num_active_paths, 1);
 }
 
+#define IDX_SENTINEL    0
+#define IS_DONE(idx)    (idx == IDX_SENTINEL)
+#define IS_LEAF(idx)    (idx >= sc.count)
+
+#define BIT_MASK        3
+#define BIT_PARENT      3
+#define BIT_LEFT        1
+#define BIT_RIGHT       2
+
+__device__ void pop_bitstack(unsigned long long& bitstack, int& idx) {
+    // TODO we may be able to combine this logic with main traversal loop to simplify this
+    while ((bitstack & BIT_MASK) == BIT_PARENT) {
+        // pop one level out of the stack
+        bitstack = bitstack >> 2;
+        idx = idx >> 1;
+    }
+
+    if (bitstack == 0) {
+        idx = IDX_SENTINEL;
+    }
+    else {
+        // idx could point to left or right child regardless of sibling we need to go to
+        idx = (idx >> 1) << 1; // make sure idx always points to left sibling
+        idx += (bitstack & BIT_MASK) - 1; // move idx to the sibling stored in bitstack
+        bitstack = bitstack | BIT_PARENT; // set bitstack to parent, so we can backtrack
+    }
+}
+
 __global__ void hit_bvh(const render_params params, paths p) {
     // a limited number of threads are started to operate on active_paths
 
@@ -152,13 +180,12 @@ __global__ void hit_bvh(const render_params params, paths p) {
     ray r; // corresponding ray
 
     // bvh traversal state
-    bool down = false;
-    int idx = 1;
-    bool found = false;
-    float closest = FLT_MAX;
+    int idx = IDX_SENTINEL;
+    bool found;
+    float closest;
     hit_record rec;
 
-    unsigned int bitstack = 0;
+    unsigned long long bitstack;
 
     // Initialize persistent threads.
     // given that each block is 32 thread wide, we can use threadIdx.x as a warpId
@@ -171,7 +198,7 @@ __global__ void hit_bvh(const render_params params, paths p) {
         volatile int& pathBase = nextPathArray[threadIdx.y];
 
         // identify which lanes are done
-        const bool          terminated      = idx == 1 && !down;
+        const bool          terminated      = IS_DONE(idx);
         const unsigned int  maskTerminated  = __ballot_sync(__activemask(), terminated);
         const int           numTerminated   = __popc(maskTerminated);
         const int           idxTerminated   = __popc(maskTerminated & ((1u << tidx) - 1));
@@ -191,67 +218,73 @@ __global__ void hit_bvh(const render_params params, paths p) {
                 r = p.r[pid];
 
                 // setup traversal
-                down = true;
                 idx = 1;
                 found = false;
                 closest = FLT_MAX;
                 bitstack = 0;
+
+                // check if ray intersects root bvh node
+                float hit_t;
+                if (!hit_bbox(d_nodes[idx], r, FLT_MAX, hit_t))
+                    idx = IDX_SENTINEL;
             }
         }
 
-        while (true) {
-            if (down) {
-                bvh_node node;
-                if (idx < 2048)
-                    node = d_nodes[idx];
+        // traversal
+        while (!IS_DONE(idx)) {
+            // we already intersected ray with idx node, now we need to load its children and intersect the ray with them
+            const scene& sc = params.sc;
+            if (IS_LEAF(idx)) {
+                int m = (idx - sc.count) * lane_size_float;
+                #pragma unroll
+                for (int i = 0; i < lane_size_spheres; i++) {
+                    vec3 center(sc.spheres[m++], sc.spheres[m++], sc.spheres[m++]);
+                    if (hit_point(center, r, 0.001f, closest, rec)) {
+                        found = true;
+                        closest = rec.t;
+                        rec.idx = (idx - sc.count) * lane_size_spheres + i;
+                    }
+                }
+
+                pop_bitstack(bitstack, idx);
+            }
+            else {
+                //TODO should we interleave loading left, check hit left, loading right, check hit right ?
+                // load left, right nodes
+                bvh_node left, right;
+                const int idx2 = idx * 2; // we are going to load and intersect children of idx
+                if (idx2 < 2048) {
+                    left = d_nodes[idx2];
+                    right = d_nodes[idx2 + 1];
+                }
                 else {
-                    unsigned int tex_idx = (idx - 2048) * 3;
+                    unsigned int tex_idx = (idx2 - 2048) * 3;
                     float2 a = tex1Dfetch(t_bvh, tex_idx++);
                     float2 b = tex1Dfetch(t_bvh, tex_idx++);
                     float2 c = tex1Dfetch(t_bvh, tex_idx++);
-
-                    node = bvh_node(a.x, a.y, b.x, b.y, c.x, c.y);
+                    left = bvh_node(a.x, a.y, b.x, b.y, c.x, c.y);
+                    a = tex1Dfetch(t_bvh, tex_idx++);
+                    b = tex1Dfetch(t_bvh, tex_idx++);
+                    c = tex1Dfetch(t_bvh, tex_idx++);
+                    right = bvh_node(a.x, a.y, b.x, b.y, c.x, c.y);
                 }
 
-                if (hit_bbox(node, r, 0.001f, closest)) {
-                    const scene& sc = params.sc;
-                    if (idx >= sc.count) { // leaf node
-                        int m = (idx - sc.count) * lane_size_float;
-                        #pragma unroll
-                        for (int i = 0; i < lane_size_spheres; i++) {
-                            vec3 center(sc.spheres[m++], sc.spheres[m++], sc.spheres[m++]);
-                            if (hit_point(center, r, 0.001f, closest, rec)) {
-                                found = true;
-                                closest = rec.t;
-                                rec.idx = (idx - sc.count) * lane_size_spheres + i;
-                            }
-                        }
-                        down = false;
-                    }
-                    else {
-                        // current -> left
-                        const int move_left = signbit(r.direction()[node.split_axis()]);
-                        bitstack = (bitstack << 1) + move_left;
-                        idx = idx * 2 + move_left;
-                    }
+                float left_t = FLT_MAX;
+                bool traverse_left = hit_bbox(left, r, closest, left_t);
+                float right_t = FLT_MAX;
+                bool traverse_right = hit_bbox(right, r, closest, right_t);
+
+                bool swap = right_t < left_t; // right child is closer
+
+                if (traverse_left || traverse_right) {
+                    idx = idx2 + swap; // intersect closer node next
+                    if (traverse_left && traverse_right) // push farther node into the stack
+                        bitstack = (bitstack << 2) + (swap ? BIT_LEFT : BIT_RIGHT);
+                    else // push parent bit to the stack to backtrack later
+                        bitstack = (bitstack << 2) + BIT_PARENT;
                 }
                 else {
-                    down = false;
-                }
-            }
-            else if (idx == 1) {
-                break;
-            }
-            else {
-                const int move_left = bitstack & 1;
-                const int left_idx = move_left;
-                if ((idx % 2) == left_idx) { // left -> right
-                    idx += -2 * left_idx + 1; // node = node.sibling
-                    down = true;
-                }
-                else { // right -> parent
-                    bitstack = bitstack >> 1;
-                    idx = idx / 2; // node = node.parent
+                    pop_bitstack(bitstack, idx);
                 }
             }
 

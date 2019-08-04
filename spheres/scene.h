@@ -347,11 +347,12 @@ void setup_scene(char *input, scene &sc, bool csv, float *colormap) {
     delete[] colors;
 }
 
-__device__ bool hit_bbox(const bvh_node& node, const ray& r, float t_min, float t_max) {
+__device__ bool hit_bbox(const bvh_node& node, const ray& r, float t_max, float& hit_t) {
+    float t_min = 0.001f;
     for (int a = 0; a < 3; a++) {
         float invD = 1.0f / r.direction()[a];
-        float t0 = (node.min()[a] - 1 - r.origin()[a])*invD;
-        float t1 = (node.max()[a] + 1 - r.origin()[a])*invD;
+        float t0 = (node.min()[a] - 1 - r.origin()[a]) * invD;
+        float t1 = (node.max()[a] + 1 - r.origin()[a]) * invD;
         if (invD < 0.0f) {
             float tmp = t0; t0 = t1; t1 = tmp;
         }
@@ -361,6 +362,7 @@ __device__ bool hit_bbox(const bvh_node& node, const ray& r, float t_min, float 
             return false;
     }
 
+    hit_t = t_min;
     return true;
 }
 
@@ -385,59 +387,3 @@ void releaseScene(scene& sc) {
     checkCudaErrors(cudaFree(sc.spheres));
     checkCudaErrors(cudaFree(sc.colors));
 }
-
-/*
-__device__ bool shadow_bvh(const scene& sc, const ray& r, float t_min, float t_max) {
-
-    bool down = true;
-    int idx = 1;
-
-    while (true) {
-        if (down) {
-            float x0 = tex1Dfetch<float>(sc.bvh_tex, idx * 6);
-            float y0 = tex1Dfetch<float>(sc.bvh_tex, idx * 6 + 1);
-            float z0 = tex1Dfetch<float>(sc.bvh_tex, idx * 6 + 2);
-            float x1 = tex1Dfetch<float>(sc.bvh_tex, idx * 6 + 3);
-            float y1 = tex1Dfetch<float>(sc.bvh_tex, idx * 6 + 4);
-            float z1 = tex1Dfetch<float>(sc.bvh_tex, idx * 6 + 5);
-
-            bvh_node node(x0, y0, z0, x1, y1, z1);
-            if (hit_bbox(node, r, t_min, t_max)) {
-                if (idx >= sc.count) { // leaf node
-                    int m = (idx - sc.count) * lane_size_float;
-#pragma unroll
-                    for (int i = 0; i < lane_size_spheres; i++) {
-                        vec3 center(sc.spheres[m++], sc.spheres[m++], sc.spheres[m++]);
-                        hit_record rec;
-                        if (hit_point(center, r, t_min, t_max, rec)) {
-                            return true;
-                        }
-                    }
-                    down = false;
-                }
-                else {
-                    // current -> left
-                    idx = idx * 2;
-                }
-            }
-            else {
-                down = false;
-            }
-        }
-        else if (idx == 1) {
-            break;
-        }
-        else {
-            if ((idx % 2) == 0) { // left -> right
-                idx++; // node = node.sibling
-                down = true;
-            }
-            else { // right -> parent
-                idx = idx / 2; // node = node.parent
-            }
-        }
-    }
-
-    return false;
-}
-*/
