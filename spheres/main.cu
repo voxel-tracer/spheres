@@ -231,24 +231,10 @@ __global__ void hit_bvh(const render_params params, paths p) {
         }
 
         // traversal
+        const scene& sc = params.sc;
         while (!IS_DONE(idx)) {
             // we already intersected ray with idx node, now we need to load its children and intersect the ray with them
-            const scene& sc = params.sc;
-            if (IS_LEAF(idx)) {
-                int m = (idx - sc.count) * lane_size_float;
-                #pragma unroll
-                for (int i = 0; i < lane_size_spheres; i++) {
-                    vec3 center(sc.spheres[m++], sc.spheres[m++], sc.spheres[m++]);
-                    if (hit_point(center, r, 0.001f, closest, rec)) {
-                        found = true;
-                        closest = rec.t;
-                        rec.idx = (idx - sc.count) * lane_size_spheres + i;
-                    }
-                }
-
-                pop_bitstack(bitstack, idx);
-            }
-            else {
+            if (!IS_LEAF(idx)) {
                 // load left, right nodes
                 bvh_node left, right;
                 const int idx2 = idx * 2; // we are going to load and intersect children of idx
@@ -283,6 +269,19 @@ __global__ void hit_bvh(const render_params params, paths p) {
                 else {
                     pop_bitstack(bitstack, idx);
                 }
+            } else {
+                int m = (idx - sc.count) * lane_size_float;
+                #pragma unroll
+                for (int i = 0; i < lane_size_spheres; i++) {
+                    vec3 center(sc.spheres[m++], sc.spheres[m++], sc.spheres[m++]);
+                    if (hit_point(center, r, 0.001f, closest, rec)) {
+                        found = true;
+                        closest = rec.t;
+                        rec.idx = (idx - sc.count) * lane_size_spheres + i;
+                    }
+                }
+
+                pop_bitstack(bitstack, idx);
             }
 
             // some lanes may have already exited the loop, if not enough active thread are left, exit the loop
@@ -290,14 +289,16 @@ __global__ void hit_bvh(const render_params params, paths p) {
                 break;
         }
 
-        // finished traversing bvh
-        if (found) {
-            p.hit_id[pid] = rec.idx;
-            p.hit_normal[pid] = rec.n;
-            p.hit_t[pid] = rec.t;
-        }
-        else {
-            p.hit_id[pid] = -1;
+        if (IS_DONE(idx)) {
+            // finished traversing bvh
+            if (found) {
+                p.hit_id[pid] = rec.idx;
+                p.hit_normal[pid] = rec.n;
+                p.hit_t[pid] = rec.t;
+            }
+            else {
+                p.hit_id[pid] = -1;
+            }
         }
     }
 }
