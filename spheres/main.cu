@@ -222,11 +222,11 @@ __global__ void hit_bvh(const render_params params, paths p) {
                 found = false;
 
                 // setup traversal if ray intersects root node
-                if (hit_bbox(d_nodes[1], r, FLT_MAX) < FLT_MAX) {
+                //if (hit_bbox(d_nodes[1], r, FLT_MAX) < FLT_MAX) {
                     idx = 1;
                     closest = FLT_MAX;
                     bitstack = 0;
-                }
+                //}
             }
         }
 
