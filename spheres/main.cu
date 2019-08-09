@@ -27,6 +27,15 @@ struct render_params {
     unsigned int maxActivePaths;
 };
 
+struct metrics {
+    unsigned int* num_active_paths;
+    unsigned long long* num_leaves_total;
+    unsigned long long* num_leaves_by25;
+    unsigned long long* num_leaves_by50;
+    unsigned long long* num_leaves_by75;
+    unsigned long long* num_leaves_by100;
+};
+
 struct paths {
     unsigned long long* next_sample; // used by init() to track next sample to fetch
 
@@ -42,7 +51,7 @@ struct paths {
     vec3* hit_normal;
     float* hit_t;
 
-    unsigned int* metric_num_active_paths;
+    metrics m;
 };
 
 void setup_paths(paths& p, int nx, int ny, int ns, unsigned int maxActivePaths) {
@@ -61,7 +70,13 @@ void setup_paths(paths& p, int nx, int ny, int ns, unsigned int maxActivePaths) 
 
     checkCudaErrors(cudaMalloc((void**)& p.next_sample, sizeof(unsigned long)));
     checkCudaErrors(cudaMemset((void*)p.next_sample, 0, sizeof(unsigned long)));
-    checkCudaErrors(cudaMalloc((void**)& p.metric_num_active_paths, sizeof(unsigned int)));
+
+    checkCudaErrors(cudaMalloc((void**)& p.m.num_active_paths, sizeof(unsigned int)));
+    checkCudaErrors(cudaMalloc((void**)& p.m.num_leaves_total, sizeof(unsigned long long)));
+    checkCudaErrors(cudaMalloc((void**)& p.m.num_leaves_by25, sizeof(unsigned long long)));
+    checkCudaErrors(cudaMalloc((void**)& p.m.num_leaves_by50, sizeof(unsigned long long)));
+    checkCudaErrors(cudaMalloc((void**)& p.m.num_leaves_by75, sizeof(unsigned long long)));
+    checkCudaErrors(cudaMalloc((void**)& p.m.num_leaves_by100, sizeof(unsigned long long)));
 }
 
 void free_paths(const paths& p) {
@@ -77,7 +92,12 @@ void free_paths(const paths& p) {
     checkCudaErrors(cudaFree(p.active_paths));
     checkCudaErrors(cudaFree(p.next_path));
 
-    checkCudaErrors(cudaFree(p.metric_num_active_paths));
+    checkCudaErrors(cudaFree(p.m.num_active_paths));
+    checkCudaErrors(cudaFree(p.m.num_leaves_total));
+    checkCudaErrors(cudaFree(p.m.num_leaves_by25));
+    checkCudaErrors(cudaFree(p.m.num_leaves_by50));
+    checkCudaErrors(cudaFree(p.m.num_leaves_by75));
+    checkCudaErrors(cudaFree(p.m.num_leaves_by100));
 }
 
 __global__ void init(const render_params params, paths p, bool first, const camera cam) {
@@ -86,7 +106,12 @@ __global__ void init(const render_params params, paths p, bool first, const came
 
     const unsigned int pid = threadIdx.x + blockIdx.x * blockDim.x;
     if (pid == 0) {
-        p.metric_num_active_paths[0] = 0;
+        p.m.num_active_paths[0] = 0;
+        p.m.num_leaves_total[0] = 0;
+        p.m.num_leaves_by25[0] = 0;
+        p.m.num_leaves_by50[0] = 0;
+        p.m.num_leaves_by75[0] = 0;
+        p.m.num_leaves_by100[0] = 0;
         p.next_path[0] = 0;
     }
 
@@ -142,7 +167,7 @@ __global__ void init(const render_params params, paths p, bool first, const came
 
     // path still active or has just been generated
     //TODO each warp uses activemask() to count number active lanes then just 1st active lane need to update the metric
-    atomicAdd(p.metric_num_active_paths, 1);
+    atomicAdd(p.m.num_active_paths, 1);
 }
 
 #define IDX_SENTINEL    0
@@ -283,6 +308,21 @@ __global__ void hit_bvh(const render_params params, paths p) {
             // either all lanes have postponed a leaf or current lane cannot postpone anymore
 
             while (IS_LEAF(leaf_idx)) {
+                // first active thread of the warp should increment the metrics
+                const int num_active = __popc(__activemask());
+                const int idx_lane  = __popc(__activemask() & ((1u << tidx) - 1));
+                if (idx_lane == 0) {
+                    atomicAdd(p.m.num_leaves_total, 1);
+                    if (num_active == 32)
+                        atomicAdd(p.m.num_leaves_by100, 1);
+                    else if (num_active >= 24)
+                        atomicAdd(p.m.num_leaves_by75, 1);
+                    else if (num_active >= 16)
+                        atomicAdd(p.m.num_leaves_by50, 1);
+                    else if (num_active>= 8)
+                        atomicAdd(p.m.num_leaves_by25, 1);
+                }
+
                 // process all primitives in the leaf
                 int m = (leaf_idx - sc.count) * lane_size_float;
                 #pragma unroll
@@ -381,10 +421,19 @@ __global__ void update(const render_params params, paths p) {
     p.bounce[pid] = bounce;
 }
 
-__global__ void print_metrics(paths p, unsigned int iteration, unsigned int maxActivePaths) {
-    unsigned int metric_num_active_paths = p.metric_num_active_paths[0];
-    unsigned int ratio = 100.0 * metric_num_active_paths / maxActivePaths;
-    printf("iteration %4d: metric_num_active_paths = %d (%2d%%)\n", iteration, metric_num_active_paths, ratio);
+#define RATIO(x,a)  (100.0 * x / a)
+
+__global__ void print_metrics(metrics m, unsigned int iteration, unsigned int maxActivePaths) {
+    unsigned long long total = m.num_leaves_total[0];
+    if (total > 0) {
+        unsigned long long num100 = m.num_leaves_by100[0];
+        unsigned long long num75 = m.num_leaves_by75[0];
+        unsigned long long num50 = m.num_leaves_by50[0];
+        unsigned long long num25 = m.num_leaves_by25[0];
+        unsigned long long less25 = total - num100 - num75 - num50 - num25;
+        printf("iteration %4d: leaves, total %7llu, 100%% %3.2f%%, >=75%% %3.2f%%, >=50%% %3.2f%%, >=25%% %3.2f%%, less %3.2f%%\n", iteration, total,
+            RATIO(num100, total), RATIO(num75, total), RATIO(num50, total), RATIO(num25, total), RATIO(less25, total));
+    }
 }
 
 float rand(unsigned int &state) {
@@ -516,7 +565,7 @@ int main(int argc, char** argv) {
         // we don't want to check the metric after each bounce, we do it every numBouncesPerIter iterations
         if (iteration > 0 && (iteration % numBouncesPerIter) == 0) {
             unsigned int num_active_paths;
-            checkCudaErrors(cudaMemcpy((void*)& num_active_paths, (void*)p.metric_num_active_paths, sizeof(unsigned int), cudaMemcpyDeviceToHost));
+            checkCudaErrors(cudaMemcpy((void*)& num_active_paths, (void*)p.m.num_active_paths, sizeof(unsigned int), cudaMemcpyDeviceToHost));
             if (num_active_paths == 0) {
                 break;
             }
@@ -538,7 +587,7 @@ int main(int argc, char** argv) {
         }
         // print metrics
         if (verbose) {
-            print_metrics << <1, 1 >> > (p, iteration, maxActivePaths);
+            print_metrics << <1, 1 >> > (p.m, iteration, maxActivePaths);
             checkCudaErrors(cudaGetLastError());
         }
         checkCudaErrors(cudaDeviceSynchronize());
