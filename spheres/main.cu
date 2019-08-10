@@ -217,16 +217,11 @@ __global__ void hit_bvh(const render_params params, paths p) {
                 // Fetch ray
                 r = p.r[pid];
 
-
                 // idx is already set to IDX_SENTINEL, but make sure we set found to false
                 found = false;
-
-                // setup traversal if ray intersects root node
-                //if (hit_bbox(d_nodes[1], r, FLT_MAX) < FLT_MAX) {
-                    idx = 1;
-                    closest = FLT_MAX;
-                    bitstack = 0;
-                //}
+                idx = 1;
+                closest = FLT_MAX;
+                bitstack = 0;
             }
         }
 
@@ -281,7 +276,10 @@ __global__ void hit_bvh(const render_params params, paths p) {
                     }
                 }
 
-                pop_bitstack(bitstack, idx);
+                if (found) // exit traversal once we find an intersection in any leaf
+                    idx = IDX_SENTINEL;
+                else
+                    pop_bitstack(bitstack, idx);
             }
 
             // some lanes may have already exited the loop, if not enough active thread are left, exit the loop
