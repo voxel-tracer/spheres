@@ -183,6 +183,7 @@ __global__ void hit_bvh(const render_params params, paths p) {
     int idx = IDX_SENTINEL;
     int leaf_idx = 0;
     bool found;
+    bool process_leaf;
     float closest;
     hit_record rec;
 
@@ -224,6 +225,7 @@ __global__ void hit_bvh(const render_params params, paths p) {
                 leaf_idx = 0;
                 closest = FLT_MAX;
                 bitstack = 0;
+                process_leaf = false;
             }
         }
 
@@ -232,9 +234,29 @@ __global__ void hit_bvh(const render_params params, paths p) {
         while (!IS_DONE(idx)) {
             // we already intersected ray with idx node, now we need to load its children and intersect the ray with them
 
-            // traverse internal nodes until all lanes have found a leaf
-            // if we postponed a leaf and hit another one, IS_LEAF(idx) = true
-            while (!IS_LEAF(idx) && !IS_DONE(idx)) {
+            if (process_leaf) {
+                // either all lanes have postponed a leaf or current lane cannot postpone anymore
+                // process all primitives in the leaf
+                int m = (leaf_idx - sc.count) * lane_size_float;
+                #pragma unroll
+                for (int i = 0; i < lane_size_spheres; i++) {
+                    vec3 center(sc.spheres[m++], sc.spheres[m++], sc.spheres[m++]);
+                    if (hit_point(center, r, 0.001f, closest, rec)) {
+                        found = true;
+                        closest = rec.t;
+                        rec.idx = (leaf_idx - sc.count) * lane_size_spheres + i;
+                    }
+                }
+
+                leaf_idx = idx; // may or maynot be a leaf
+                process_leaf = IS_LEAF(leaf_idx);
+                if (process_leaf)
+                    pop_bitstack(bitstack, idx); // make sure idx points to the next node in the tree
+            }
+            else {
+                // traverse internal nodes until all lanes have found a leaf
+                // if we postponed a leaf and hit another one, IS_LEAF(idx) = true
+
                 // load left, right nodes
                 bvh_node left, right;
                 const int idx2 = idx * 2; // we are going to load and intersect children of idx
@@ -275,29 +297,11 @@ __global__ void hit_bvh(const render_params params, paths p) {
                     leaf_idx = idx;
                     pop_bitstack(bitstack, idx);
                 }
+                process_leaf = IS_LEAF(idx); // we can't postpone any more
 
+                // if all active lines have a postponed leaf, process leaf next
                 if (__all_sync(__activemask(), IS_LEAF(leaf_idx)))
-                    break; // all active lines have a postponed leaf
-            }
-            
-            // either all lanes have postponed a leaf or current lane cannot postpone anymore
-
-            while (IS_LEAF(leaf_idx)) {
-                // process all primitives in the leaf
-                int m = (leaf_idx - sc.count) * lane_size_float;
-                #pragma unroll
-                for (int i = 0; i < lane_size_spheres; i++) {
-                    vec3 center(sc.spheres[m++], sc.spheres[m++], sc.spheres[m++]);
-                    if (hit_point(center, r, 0.001f, closest, rec)) {
-                        found = true;
-                        closest = rec.t;
-                        rec.idx = (leaf_idx - sc.count) * lane_size_spheres + i;
-                    }
-                }
-
-                leaf_idx = idx; // may or maynot be a leaf
-                if (IS_LEAF(leaf_idx))
-                    pop_bitstack(bitstack, idx); // make sure idx points to the next node in the tree
+                    process_leaf = true;
             }
 
             // some lanes may have already exited the loop, if not enough active thread are left, exit the loop
