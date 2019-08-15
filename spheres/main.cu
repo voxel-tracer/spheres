@@ -179,7 +179,7 @@ __global__ void init(const render_params params, paths p, bool first, const came
 
     // generate all terminated paths
     const bool          terminated     = bounce == kMaxBounces;
-    const unsigned int  maskTerminated = __ballot_sync(__activemask(), terminated);
+    const unsigned int  maskTerminated = __ballot_sync(0xffffffff, terminated);
     const int           numTerminated  = __popc(maskTerminated);
     const int           idxTerminated  = __popc(maskTerminated & ((1u << threadIdx.x) - 1));
 
@@ -274,7 +274,7 @@ __global__ void hit_bvh(const render_params params, paths p) {
 
         // identify which lanes are done
         const bool          terminated      = IS_DONE(idx);
-        const unsigned int  maskTerminated  = __ballot_sync(__activemask(), terminated);
+        const unsigned int  maskTerminated  = __ballot_sync(0xffffffff, terminated);
         const int           numTerminated   = __popc(maskTerminated);
         const int           idxTerminated   = __popc(maskTerminated & ((1u << tidx) - 1));
 
@@ -304,11 +304,10 @@ __global__ void hit_bvh(const render_params params, paths p) {
 
         // traversal
         const scene& sc = params.sc;
-        while (!IS_DONE(idx)) {
+        while (process_leaf || !IS_DONE(idx)) {
             // we already intersected ray with idx node, now we need to load its children and intersect the ray with them
 
             if (process_leaf) {
-                p.m.counter.increment(tidx);
                 // either all lanes have postponed a leaf or current lane cannot postpone anymore
                 // process all primitives in the leaf
                 int m = (leaf_idx - sc.count) * lane_size_float;
@@ -374,7 +373,7 @@ __global__ void hit_bvh(const render_params params, paths p) {
                 process_leaf = IS_LEAF(idx); // we can't postpone any more
 
                 // if all active lines have a postponed leaf, process leaf next
-                if (__all_sync(__activemask(), IS_LEAF(leaf_idx)))
+                if (__all_sync(0xffffffff, IS_LEAF(leaf_idx)))
                     process_leaf = true;
             }
 
@@ -384,7 +383,7 @@ __global__ void hit_bvh(const render_params params, paths p) {
             }
         }
 
-        if (IS_DONE(idx)) {
+        if (IS_DONE(idx) && !process_leaf) {
             // finished traversing bvh
             if (found) {
                 p.hit_id[pid] = rec.idx;
