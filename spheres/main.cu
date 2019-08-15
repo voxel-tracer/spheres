@@ -185,7 +185,7 @@ __global__ void init(const render_params params, paths p, bool first, const came
 
     // generate all terminated paths
     const bool          terminated     = bounce == kMaxBounces;
-    const unsigned int  maskTerminated = __ballot_sync(__activemask(), terminated);
+    const unsigned int  maskTerminated = __ballot_sync(0xffffffff, terminated);
     const int           numTerminated  = __popc(maskTerminated);
     const int           idxTerminated  = __popc(maskTerminated & ((1u << threadIdx.x) - 1));
 
@@ -278,7 +278,7 @@ __global__ void hit_bvh(const render_params params, paths p) {
 
         // identify which lanes are done
         const bool          terminated      = IS_DONE(idx);
-        const unsigned int  maskTerminated  = __ballot_sync(__activemask(), terminated);
+        const unsigned int  maskTerminated  = __ballot_sync(0xffffffff, terminated);
         const int           numTerminated   = __popc(maskTerminated);
         const int           idxTerminated   = __popc(maskTerminated & ((1u << tidx) - 1));
 
@@ -315,8 +315,6 @@ __global__ void hit_bvh(const render_params params, paths p) {
 
             // we already intersected ray with idx node, now we need to load its children and intersect the ray with them
             if (!IS_LEAF(idx)) {
-                p.metric_counter.increment(tidx);
-
                 // load left, right nodes
                 bvh_node left, right;
                 const int idx2 = idx * 2; // we are going to load and intersect children of idx
@@ -352,8 +350,6 @@ __global__ void hit_bvh(const render_params params, paths p) {
                     pop_bitstack(bitstack, idx);
                 }
             } else {
-                p.metric_counter.increment(tidx);
-
                 int m = (idx - sc.count) * lane_size_float;
                 #pragma unroll
                 for (int i = 0; i < lane_size_spheres; i++) {
