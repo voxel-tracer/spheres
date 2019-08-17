@@ -111,10 +111,11 @@ __device__ __constant__ bvh_node d_nodes[2048];
 __device__ __constant__ float d_colormap[256 * 3];
 
 texture<float4> t_bvh;
+texture<float> t_spheres;
 float* d_bvh_buf;
+float* d_spheres_buf;
 
 struct scene {
-    float* spheres;
     int count;
     int *colors;
 
@@ -187,18 +188,6 @@ void build_bvh(bvh_node *nodes, int idx, sphere *l, int n) {
             qsort(l, n, sizeof(sphere), box_y_compare);
         else
             qsort(l, n, sizeof(sphere), box_z_compare);
-
-        // assert that we can compute split_axis from children nodes
-        //const bvh_node left(minof(l, n / 2), maxof(l, n / 2));
-        //const bvh_node right(minof(l + n / 2, n / 2), maxof(l + n / 2, n / 2));
-        //unsigned int computed_axis = max_component(right.max() - left.min());
-        //if (computed_axis != axis) {
-        //    cout << "expected " << axis << ", but got " << computed_axis << endl;
-        //    cout << "parent: " << nodes[idx] << endl;
-        //    cout << "left: " << left << endl;
-        //    cout << "right: " << right << endl;
-        //}
-        //assert(computed_axis == axis);
 
         build_bvh(nodes, idx * 2, l, n / 2);
         build_bvh(nodes, idx * 2 + 1, l + n / 2, n / 2);
@@ -309,14 +298,12 @@ void setup_scene(char *input, scene &sc, bool csv, float *colormap) {
         cout << "created texture memory" << endl;
     }
 
-    cout << "copying spheres to device" << endl;
-    cout.flush();
-
-    const int scene_size_float = lane_size_float * (num_spheres / lane_size_spheres);
+    // copying spheres to texture memory
+    const int spheres_size_float = lane_size_float * (num_spheres / lane_size_spheres);
 
     // copy the spheres in array of floats
     // do it after we build the BVH as it would have moved the spheres around
-    float *floats = new float[scene_size_float];
+    float *floats = new float[spheres_size_float];
     int *colors = new int[num_spheres];
     int idx = 0;
     int i = 0;
@@ -332,10 +319,11 @@ void setup_scene(char *input, scene &sc, bool csv, float *colormap) {
     assert(idx == scene_size_float);
 
     checkCudaErrors(cudaMalloc((void **)&sc.colors, num_spheres * sizeof(int)));
-    checkCudaErrors(cudaMalloc((void **)&sc.spheres, scene_size_float * sizeof(float)));
     checkCudaErrors(cudaMemcpy(sc.colors, colors, num_spheres * sizeof(int), cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(sc.spheres, floats, scene_size_float * sizeof(float), cudaMemcpyHostToDevice));
 
+    checkCudaErrors(cudaMalloc((void**)& d_spheres_buf, spheres_size_float * sizeof(float)));
+    checkCudaErrors(cudaMemcpy(d_spheres_buf, floats, spheres_size_float * sizeof(float), cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaBindTexture(NULL, t_spheres, (void*)d_spheres_buf, spheres_size_float * sizeof(float)));
 #ifdef COUNT_BVH
     checkCudaErrors(cudaMalloc((void **)&sc.counters, 32 * sizeof(long)));
     checkCudaErrors(cudaMemset(sc.counters, 0, 32 * sizeof(long)));
@@ -382,7 +370,8 @@ void releaseScene(scene& sc) {
 #endif
     // destroy texture object
     checkCudaErrors(cudaUnbindTexture(t_bvh));
+    checkCudaErrors(cudaUnbindTexture(t_spheres));
     checkCudaErrors(cudaFree(d_bvh_buf));
-    checkCudaErrors(cudaFree(sc.spheres));
+    checkCudaErrors(cudaFree(d_spheres_buf));
     checkCudaErrors(cudaFree(sc.colors));
 }

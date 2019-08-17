@@ -266,7 +266,10 @@ __global__ void hit_bvh(const render_params params, paths p) {
                 int m = (idx - sc.count) * lane_size_float;
                 #pragma unroll
                 for (int i = 0; i < lane_size_spheres; i++) {
-                    vec3 center(sc.spheres[m++], sc.spheres[m++], sc.spheres[m++]);
+                    float x = tex1Dfetch(t_spheres, m++);
+                    float y = tex1Dfetch(t_spheres, m++);
+                    float z = tex1Dfetch(t_spheres, m++);
+                    vec3 center(x, y, z);
                     if (hit_point(center, r, 0.001f, closest, rec)) {
                         found = true;
                         closest = rec.t;
