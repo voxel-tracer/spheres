@@ -149,27 +149,25 @@ __global__ void init(const render_params params, paths p, bool first, const came
 #define IS_DONE(idx)    (idx == IDX_SENTINEL)
 #define IS_LEAF(idx)    (idx >= sc.count)
 
+#define BIT_DONE        3
 #define BIT_MASK        3
-#define BIT_PARENT      3
+#define BIT_PARENT      0
 #define BIT_LEFT        1
 #define BIT_RIGHT       2
 
 __device__ void pop_bitstack(unsigned long long& bitstack, int& idx) {
-    // TODO we may be able to combine this logic with main traversal loop to simplify this
-    while ((bitstack & BIT_MASK) == BIT_PARENT) {
-        // pop one level out of the stack
-        bitstack = bitstack >> 2;
-        idx = idx >> 1;
-    }
+    const int m = (__ffsll(bitstack) - 1) / 2;
+    bitstack >>= (m << 1);
+    idx >>= m;
 
-    if (bitstack == 0) {
+    if (bitstack == BIT_DONE) {
         idx = IDX_SENTINEL;
     }
     else {
         // idx could point to left or right child regardless of sibling we need to go to
         idx = (idx >> 1) << 1; // make sure idx always points to left sibling
         idx += (bitstack & BIT_MASK) - 1; // move idx to the sibling stored in bitstack
-        bitstack = bitstack | BIT_PARENT; // set bitstack to parent, so we can backtrack
+        bitstack = bitstack & (~BIT_MASK); // set bitstack to parent, so we can backtrack
     }
 }
 
@@ -221,7 +219,7 @@ __global__ void hit_bvh(const render_params params, paths p) {
                 found = false;
                 idx = 1;
                 closest = FLT_MAX;
-                bitstack = 0;
+                bitstack = BIT_DONE;
             }
         }
 
