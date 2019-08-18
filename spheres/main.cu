@@ -15,8 +15,7 @@ const int MaxBlockWidth = 32;
 const int MaxBlockHeight = 2; // block width is 32
 const int kMaxBounces = 10;
 
-const int nx = 1200;
-const int ny = 1200;
+typedef unsigned long long ull;
 
 struct render_params {
     vec3* fb;
@@ -25,10 +24,11 @@ struct render_params {
     unsigned int height;
     unsigned int spp;
     unsigned int maxActivePaths;
+    ull samples_count;
 };
 
 struct paths {
-    unsigned long long* next_sample; // used by init() to track next sample to fetch
+    ull* next_sample; // used by init() to track next sample to fetch
 
     // pixel_id of active paths currently being traced by the renderer, it's a subset of all_sample_pool
     unsigned int* active_paths;
@@ -59,8 +59,8 @@ void setup_paths(paths& p, int nx, int ny, int ns, unsigned int maxActivePaths) 
     checkCudaErrors(cudaMalloc((void**)& p.active_paths, num_paths * sizeof(unsigned int)));
     checkCudaErrors(cudaMalloc((void**)& p.next_path, sizeof(unsigned int)));
 
-    checkCudaErrors(cudaMalloc((void**)& p.next_sample, sizeof(unsigned long)));
-    checkCudaErrors(cudaMemset((void*)p.next_sample, 0, sizeof(unsigned long)));
+    checkCudaErrors(cudaMalloc((void**)& p.next_sample, sizeof(ull)));
+    checkCudaErrors(cudaMemset((void*)p.next_sample, 0, sizeof(ull)));
     checkCudaErrors(cudaMalloc((void**)& p.metric_num_active_paths, sizeof(unsigned int)));
 }
 
@@ -110,7 +110,7 @@ __global__ void init(const render_params params, paths p, bool first, const came
     const int           numTerminated  = __popc(maskTerminated);
     const int           idxTerminated  = __popc(maskTerminated & ((1u << threadIdx.x) - 1));
 
-    __shared__ volatile unsigned long long nextSample;
+    __shared__ volatile ull nextSample;
 
     if (terminated) {
         // first terminated lane increments next_sample
@@ -118,9 +118,8 @@ __global__ void init(const render_params params, paths p, bool first, const came
             nextSample = atomicAdd(p.next_sample, numTerminated);
 
         // compute sample this lane is going to fetch
-        const unsigned long long sample_id = nextSample + idxTerminated;
-        const unsigned long long num_all_samples = ((unsigned long long) params.width) * params.height * params.spp;
-        if (sample_id >= num_all_samples)
+        const ull sample_id = nextSample + idxTerminated;
+        if (sample_id >= params.samples_count)
             return; // no more samples to fetch
 
         // retrieve pixel_id corresponding to current path
@@ -364,10 +363,15 @@ __global__ void update(const render_params params, paths p) {
     p.bounce[pid] = bounce;
 }
 
-__global__ void print_metrics(paths p, unsigned int iteration, unsigned int maxActivePaths) {
-    unsigned int metric_num_active_paths = p.metric_num_active_paths[0];
-    unsigned int ratio = 100.0 * metric_num_active_paths / maxActivePaths;
-    printf("iteration %4d: metric_num_active_paths = %d (%2d%%)\n", iteration, metric_num_active_paths, ratio);
+#define RATIO(a, b) (int(100.0 * a / b))
+
+__global__ void print_metrics(render_params params, paths p, unsigned int iteration, unsigned int maxActivePaths, unsigned long elapsed_time) {
+    unsigned int active_paths = p.metric_num_active_paths[0];
+    ull next_sample = p.next_sample[0];
+    printf("\riteration %4d: num_active_paths = %d (%2d%%), next_sample = %lluM (%2d%%), in %d seconds", iteration, 
+        active_paths, RATIO(active_paths, maxActivePaths),
+        next_sample >> 20, RATIO(next_sample, params.samples_count),
+        elapsed_time);
 }
 
 float rand(unsigned int &state) {
@@ -424,18 +428,22 @@ int cmpfunc(const void * a, const void * b) {
         return 0;
 }
 
+#define ARG_INT(idx, def)   (argc > idx ? strtol(argv[idx], NULL, 10) : def)
+
 int main(int argc, char** argv) {
     if (argc < 2) {
-        cerr << "usage spheres file_name [num_samples=1] [camera_dist=100] [maxActivePaths=1M] [numBouncesPerIter=4] [colormap=viridis.csv] [verbose]";
+        cerr << "usage spheres file_name [width=1200] [height=1200] [num_samples=1] [camera_dist=100] [maxActivePaths=1M] [numBouncesPerIter=4] [colormap=viridis.csv] [verbose]";
         exit(-1);
     }
     char* input = argv[1];
-    const int ns = (argc > 2) ? strtol(argv[2], NULL, 10) : 1;
-    const int dist = (argc > 3) ? strtof(argv[3], NULL) : 100;
-    const int maxActivePaths = (argc > 4) ? strtol(argv[4], NULL, 10) : (1024 * 1024);
-    const int numBouncesPerIter = (argc > 5) ? strtol(argv[5], NULL, 10) : 4;
-    const char* colormap = (argc > 6) ? argv[6] : "viridis.csv";
-    const bool verbose = (argc > 7 && !strcmp(argv[7], "verbose"));
+    const int nx = ARG_INT(2, 1200);
+    const int ny = ARG_INT(3, 1200);
+    const int ns = ARG_INT(4, 10);
+    const int dist = ARG_INT(5, 100);
+    const int maxActivePaths = ARG_INT(6, 1024 * 1024);
+    const int numBouncesPerIter = ARG_INT(7, 4);
+    const char* colormap = (argc > 8) ? argv[8] : "viridis.csv";
+    const bool verbose = (argc > 9 && !strcmp(argv[9], "verbose"));
 
     const bool is_csv = strncmp(input + strlen(input) - 4, ".csv", 4) == 0;
     
@@ -476,6 +484,9 @@ int main(int argc, char** argv) {
     params.height = ny;
     params.spp = ns;
     params.maxActivePaths = maxActivePaths;
+    params.samples_count = nx;
+    params.samples_count *= ny;
+    params.samples_count *= ns;
 
     paths p;
     setup_paths(p, nx, ny, ns, maxActivePaths);
@@ -521,7 +532,7 @@ int main(int argc, char** argv) {
         }
         // print metrics
         if (verbose) {
-            print_metrics << <1, 1 >> > (p, iteration, maxActivePaths);
+            print_metrics << <1, 1 >> > (params, p, iteration, maxActivePaths, (float)(clock() - start) / CLOCKS_PER_SEC);
             checkCudaErrors(cudaGetLastError());
         }
         checkCudaErrors(cudaDeviceSynchronize());
@@ -531,7 +542,7 @@ int main(int argc, char** argv) {
     cudaProfilerStop();
 
     checkCudaErrors(cudaDeviceSynchronize());
-    cerr << "rendered " << (params.width* params.height* params.spp) << " samples in " << (float)(clock() - start) / CLOCKS_PER_SEC << " seconds.\r";
+    cerr << "\rrendered " << params.samples_count << " samples in " << (float)(clock() - start) / CLOCKS_PER_SEC << " seconds.                                    \n";
 
     // Output FB as Image
     checkCudaErrors(cudaMemcpy(h_fb, d_fb, fb_size, cudaMemcpyDeviceToHost));
