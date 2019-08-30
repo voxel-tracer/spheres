@@ -374,13 +374,6 @@ __global__ void print_metrics(render_params params, paths p, unsigned int iterat
         elapsed_time);
 }
 
-float rand(unsigned int &state) {
-    state = (214013 * state + 2531011);
-    return (float)((state >> 16) & 0x7FFF) / 32767;
-}
-
-#define RND (rand(rand_state))
-
 camera setup_camera(int nx, int ny, float dist) {
     vec3 lookfrom(dist, dist, dist);
     vec3 lookat(0, 0, 0);

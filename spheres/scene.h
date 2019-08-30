@@ -13,8 +13,6 @@
 //#undef NDEBUG
 #include <cassert>
 
-//#define COUNT_BVH
-
 using namespace std;
 
 const unsigned int lane_size_float = 64 / sizeof(float);
@@ -87,22 +85,20 @@ leaf nodes represent 2 spheres
 */
 struct bvh_node {
     __host__ __device__ bvh_node() {}
-    __host__ bvh_node(const vec3& A, const vec3& B) :a(A), b(B) {}
+    bvh_node(const vec3& A, const vec3& B) :a(A), b(B) {}
     __device__ bvh_node(float x0, float y0, float z0, float x1, float y1, float z1) : a(x0, y0, z0), b(x1, y1, z1) {}
 
-    __host__ __device__ vec3 min() const { return a; }
-    __host__ __device__ vec3 max() const { return b; }
-    __host__ __device__ vec3 left() const { return a; }
-    __host__ __device__ vec3 right() const { return b; }
+    __device__ vec3 min() const { return a; }
+    __device__ vec3 max() const { return b; }
 
-    __host__ __device__ unsigned int split_axis() const { return max_component(b - a); }
+    unsigned int split_axis() const { return max_component(b - a); }
 
     vec3 a;
     vec3 b;
 };
 
 ostream& operator << (ostream& out, const bvh_node& node) {
-    out << "{" << node.min() << ", " << node.max() << "}";
+    out << "{" << node.a << ", " << node.b << "}";
     return out;
 }
 
@@ -118,18 +114,7 @@ float* d_spheres_buf;
 struct scene {
     int count;
     int *colors;
-
-#ifdef COUNT_BVH
-    unsigned int *counters;
-#endif
 };
-
-unsigned int g_state = 0;
-
-float drand48() {
-    g_state = (214013 * g_state + 2531011);
-    return (float)((g_state >> 16) & 0x7FFF) / 32767;
-}
 
 int box_x_compare(const void* a, const void* b) {
     float xa = ((sphere*)a)->center.x();
@@ -324,10 +309,6 @@ void setup_scene(char *input, scene &sc, bool csv, float *colormap) {
     checkCudaErrors(cudaMalloc((void**)& d_spheres_buf, spheres_size_float * sizeof(float)));
     checkCudaErrors(cudaMemcpy(d_spheres_buf, floats, spheres_size_float * sizeof(float), cudaMemcpyHostToDevice));
     checkCudaErrors(cudaBindTexture(NULL, t_spheres, (void*)d_spheres_buf, spheres_size_float * sizeof(float)));
-#ifdef COUNT_BVH
-    checkCudaErrors(cudaMalloc((void **)&sc.counters, 32 * sizeof(long)));
-    checkCudaErrors(cudaMemset(sc.counters, 0, 32 * sizeof(long)));
-#endif
 
     delete[] nodes;
     delete[] floats;
@@ -354,20 +335,6 @@ __device__ float hit_bbox(const bvh_node& node, const ray& r, float t_max) {
 }
 
 void releaseScene(scene& sc) {
-#ifdef COUNT_BVH
-    unsigned int h_counters[32];
-    unsigned long total = 0;
-    checkCudaErrors(cudaMemcpy(h_counters, sc.counters, 32 * sizeof(unsigned int), cudaMemcpyDeviceToHost));
-    cout << "counters collected per level:" << endl;
-    for (size_t i = 0; i < 32; i++) {
-        cout << " " << i << ": " << h_counters[i] << endl;
-        total += h_counters[i];
-    }
-    cout << endl << "total " << total << endl;
-    
-
-    checkCudaErrors(cudaFree(sc.counters));
-#endif
     // destroy texture object
     checkCudaErrors(cudaUnbindTexture(t_bvh));
     checkCudaErrors(cudaUnbindTexture(t_spheres));
