@@ -37,7 +37,7 @@ struct paths {
     ray* r;
     rand_state* state;
     vec3* attentuation;
-    unsigned short* bounce;
+    unsigned short* flag;
     int* hit_id;
     vec3* hit_normal;
     float* hit_t;
@@ -45,13 +45,16 @@ struct paths {
     unsigned int* metric_num_active_paths;
 };
 
+#define FLAG_BOUNCE_MASK    0xF
+#define FLAG_HAS_HIT        0x10
+
 void setup_paths(paths& p, int nx, int ny, int ns, unsigned int maxActivePaths) {
     // at any given moment only kMaxActivePaths at most are active at the same time
     const unsigned num_paths = maxActivePaths;
     checkCudaErrors(cudaMalloc((void**)& p.r, num_paths * sizeof(ray)));
     checkCudaErrors(cudaMalloc((void**)& p.state, num_paths * sizeof(rand_state)));
     checkCudaErrors(cudaMalloc((void**)& p.attentuation, num_paths * sizeof(vec3)));
-    checkCudaErrors(cudaMalloc((void**)& p.bounce, num_paths * sizeof(unsigned short)));
+    checkCudaErrors(cudaMalloc((void**)& p.flag, num_paths * sizeof(unsigned short)));
     checkCudaErrors(cudaMalloc((void**)& p.hit_id, num_paths * sizeof(int)));
     checkCudaErrors(cudaMalloc((void**)& p.hit_normal, num_paths * sizeof(vec3)));
     checkCudaErrors(cudaMalloc((void**)& p.hit_t, num_paths * sizeof(float)));
@@ -68,7 +71,7 @@ void free_paths(const paths& p) {
     checkCudaErrors(cudaFree(p.r));
     checkCudaErrors(cudaFree(p.state));
     checkCudaErrors(cudaFree(p.attentuation));
-    checkCudaErrors(cudaFree(p.bounce));
+    checkCudaErrors(cudaFree(p.flag));
     checkCudaErrors(cudaFree(p.hit_id));
     checkCudaErrors(cudaFree(p.hit_normal));
     checkCudaErrors(cudaFree(p.hit_t));
@@ -94,14 +97,14 @@ __global__ void init(const render_params params, paths p, bool first, const came
         return;
 
     rand_state state;
-    unsigned int bounce;
+    unsigned short bounce;
     if (first) {
         // this is the very first init, all paths are marked terminated, and we don't have a valid random state yet
         state = (wang_hash(pid) * 336343633) | 1;
         bounce = kMaxBounces;
     } else {
         state = p.state[pid];
-        bounce = p.bounce[pid];
+        bounce = p.flag[pid] & FLAG_BOUNCE_MASK;
     }
 
     // generate all terminated paths
@@ -136,7 +139,7 @@ __global__ void init(const render_params params, paths p, bool first, const came
         p.r[pid] = cam.get_ray(u, v, state);
         p.state[pid] = state;
         p.attentuation[pid] = vec3(1, 1, 1);
-        p.bounce[pid] = 0;
+        p.flag[pid] = 0;
     }
 
     // path still active or has just been generated
@@ -210,7 +213,7 @@ __global__ void hit_bvh(const render_params params, paths p) {
                 return;
 
             // setup ray if path not already terminated
-            if (p.bounce[pid] < kMaxBounces) {
+            if ((p.flag[pid] & FLAG_BOUNCE_MASK) < kMaxBounces) {
                 // Fetch ray
                 r = p.r[pid];
 
@@ -287,16 +290,12 @@ __global__ void hit_bvh(const render_params params, paths p) {
                 break;
         }
 
-        if (IS_DONE(idx)) {
+        if (found && IS_DONE(idx)) {
             // finished traversing bvh
-            if (found) {
-                p.hit_id[pid] = rec.idx;
-                p.hit_normal[pid] = rec.n;
-                p.hit_t[pid] = rec.t;
-            }
-            else {
-                p.hit_id[pid] = -1;
-            }
+            p.hit_id[pid] = rec.idx;
+            p.hit_normal[pid] = rec.n;
+            p.hit_t[pid] = rec.t;
+            p.flag[pid] = p.flag[pid] | FLAG_HAS_HIT;
         }
     }
 }
@@ -314,14 +313,15 @@ __global__ void update(const render_params params, paths p) {
         return;
 
     // is the path already done ?
-    unsigned int bounce = p.bounce[pid];
+    unsigned short flag = p.flag[pid];
+    unsigned short bounce = flag & FLAG_BOUNCE_MASK;
     if (bounce == kMaxBounces)
         return; // yup, done and already taken care of
 
     // did the ray hit a primitive ?
-    const int hit_id = p.hit_id[pid];
-    if (hit_id >= 0) {
+    if (flag & FLAG_HAS_HIT) {
         // update path attenuation
+        const int hit_id = p.hit_id[pid];
         int clr_idx = params.sc.colors[hit_id] * 3;
         const vec3 albedo = vec3(d_colormap[clr_idx++], d_colormap[clr_idx++], d_colormap[clr_idx++]);
         p.attentuation[pid] *= albedo;
@@ -360,7 +360,7 @@ __global__ void update(const render_params params, paths p) {
         bounce = kMaxBounces; // mark path as terminated
     }
 
-    p.bounce[pid] = bounce;
+    p.flag[pid] = bounce;
 }
 
 #define RATIO(a, b) (int(100.0 * a / b))
