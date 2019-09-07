@@ -35,8 +35,10 @@ struct paths {
     unsigned int* next_path; // used by hit_bvh() to track next path to fetch and trace
 
     ray* r;
+    ray* shadow;
     rand_state* state;
     vec3* attentuation;
+    vec3* emitted;
     unsigned short* flag;
     int* hit_id;
     vec3* hit_normal;
@@ -47,13 +49,17 @@ struct paths {
 
 #define FLAG_BOUNCE_MASK    0xF
 #define FLAG_HAS_HIT        0x10
+#define FLAG_HAS_SHADOW     0x20
+#define FLAG_SHADOW_HIT     0x40
 
 void setup_paths(paths& p, int nx, int ny, int ns, unsigned int maxActivePaths) {
     // at any given moment only kMaxActivePaths at most are active at the same time
     const unsigned num_paths = maxActivePaths;
     checkCudaErrors(cudaMalloc((void**)& p.r, num_paths * sizeof(ray)));
+    checkCudaErrors(cudaMalloc((void**)& p.shadow, num_paths * sizeof(ray)));
     checkCudaErrors(cudaMalloc((void**)& p.state, num_paths * sizeof(rand_state)));
     checkCudaErrors(cudaMalloc((void**)& p.attentuation, num_paths * sizeof(vec3)));
+    checkCudaErrors(cudaMalloc((void**)& p.emitted, num_paths * sizeof(vec3)));
     checkCudaErrors(cudaMalloc((void**)& p.flag, num_paths * sizeof(unsigned short)));
     checkCudaErrors(cudaMalloc((void**)& p.hit_id, num_paths * sizeof(int)));
     checkCudaErrors(cudaMalloc((void**)& p.hit_normal, num_paths * sizeof(vec3)));
@@ -69,8 +75,10 @@ void setup_paths(paths& p, int nx, int ny, int ns, unsigned int maxActivePaths) 
 
 void free_paths(const paths& p) {
     checkCudaErrors(cudaFree(p.r));
+    checkCudaErrors(cudaFree(p.shadow));
     checkCudaErrors(cudaFree(p.state));
     checkCudaErrors(cudaFree(p.attentuation));
+    checkCudaErrors(cudaFree(p.emitted));
     checkCudaErrors(cudaFree(p.flag));
     checkCudaErrors(cudaFree(p.hit_id));
     checkCudaErrors(cudaFree(p.hit_normal));
@@ -92,6 +100,7 @@ __global__ void init(const render_params params, paths p, bool first, const came
         p.metric_num_active_paths[0] = 0;
         p.next_path[0] = 0;
     }
+    __syncthreads();
 
     if (pid >= params.maxActivePaths)
         return;
@@ -173,7 +182,7 @@ __device__ void pop_bitstack(unsigned long long& bitstack, int& idx) {
     }
 }
 
-__global__ void hit_bvh(const render_params params, paths p) {
+__global__ void trace_scattered(const render_params params, paths p) {
     // a limited number of threads are started to operate on active_paths
 
     unsigned int pid = 0; // currently traced path
@@ -300,11 +309,181 @@ __global__ void hit_bvh(const render_params params, paths p) {
     }
 }
 
-__global__ void update(const render_params params, paths p) {
+// generate shadow rays for all non terminated rays with intersections
+__global__ void generate_shadow_raws(const render_params params, paths p) {
 
     const vec3 light_center(5000, 0, 0);
     const float light_radius = 500;
     const float light_emissive = 100;
+
+    // kMaxActivePaths threads update all p.num_active_paths
+    const unsigned int pid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (pid == 0)
+        p.next_path[0] = 0;
+    __syncthreads();
+
+    if (pid >= params.maxActivePaths)
+        return;
+
+    // if the path has no intersection, which includes terminated paths, do nothing
+    const unsigned short flag = p.flag[pid];
+    if (!(flag & FLAG_HAS_HIT))
+        return;
+
+    const ray r = p.r[pid];
+    const float hit_t = p.hit_t[pid];
+    const vec3 hit_p = r.point_at_parameter(hit_t);
+    const vec3 hit_n = p.hit_normal[pid];
+    rand_state state = p.state[pid];
+
+    // create a random direction towards the light
+    // coord system for sampling
+    const vec3 sw = unit_vector(light_center - hit_p);
+    const vec3 su = unit_vector(cross(fabs(sw.x()) > 0.01f ? vec3(0, 1, 0) : vec3(1, 0, 0), sw));
+    const vec3 sv = cross(sw, su);
+
+    // sample sphere by solid angle
+    const float cosAMax = sqrt(1.0f - light_radius * light_radius / (hit_p - light_center).squared_length());
+    const float eps1 = random_float(state);
+    const float eps2 = random_float(state);
+    const float cosA = 1.0f - eps1 + eps1 * cosAMax;
+    const float sinA = sqrt(1.0f - cosA * cosA);
+    const float phi = 2 * kPI * eps2;
+    const vec3 l = unit_vector(su * cosf(phi) * sinA + sv * sinf(phi) * sinA + sw * cosA);
+
+    p.state[pid] = state;
+    const float dotl = dot(l, hit_n);
+    if (dotl <= 0)
+        return;
+
+    const float omega = 2 * kPI * (1.0f - cosAMax);
+    p.shadow[pid] = ray(hit_p, l);
+    p.emitted[pid] = vec3(light_emissive, light_emissive, light_emissive) * dotl * omega / kPI;
+    p.flag[pid] = flag | FLAG_HAS_SHADOW;
+}
+
+// traces all paths that have FLAG_HAS_SHADOW set, sets FLAG_SHADOW_HIT to true if there is a hit
+__global__ void trace_shadows(const render_params params, paths p) {
+    // a limited number of threads are started to operate on active_paths
+
+    unsigned int pid = 0; // currently traced path
+    ray r; // corresponding ray
+
+    // bvh traversal state
+    int idx = IDX_SENTINEL;
+    bool found = false;
+    hit_record rec;
+
+    unsigned long long bitstack;
+
+    // Initialize persistent threads.
+    // given that each block is 32 thread wide, we can use threadIdx.x as a warpId
+    __shared__ volatile int nextPathArray[MaxBlockHeight]; // Current ray index in global buffer.
+
+    // Persistent threads: fetch and process rays in a loop.
+
+    while (true) {
+        const int tidx = threadIdx.x;
+        volatile int& pathBase = nextPathArray[threadIdx.y];
+
+        // identify which lanes are done
+        const bool          terminated = IS_DONE(idx);
+        const unsigned int  maskTerminated = __ballot_sync(__activemask(), terminated);
+        const int           numTerminated = __popc(maskTerminated);
+        const int           idxTerminated = __popc(maskTerminated & ((1u << tidx) - 1));
+
+        if (terminated) {
+            // first terminated lane updates the base ray index
+            if (idxTerminated == 0)
+                pathBase = atomicAdd(p.next_path, numTerminated);
+
+            pid = pathBase + idxTerminated;
+            if (pid >= params.maxActivePaths)
+                return;
+
+            // setup ray if path has a shadow ray
+            if ((p.flag[pid] & FLAG_HAS_SHADOW)) {
+                // Fetch ray
+                r = p.shadow[pid];
+
+                // idx is already set to IDX_SENTINEL, but make sure we set found to false
+                found = false;
+                idx = 1;
+                bitstack = BIT_DONE;
+            }
+        }
+
+        // traversal
+        const scene& sc = params.sc;
+        while (!IS_DONE(idx)) {
+            // we already intersected ray with idx node, now we need to load its children and intersect the ray with them
+            if (!IS_LEAF(idx)) {
+                // load left, right nodes
+                bvh_node left, right;
+                const int idx2 = idx * 2; // we are going to load and intersect children of idx
+                if (idx2 < 2048) {
+                    left = d_nodes[idx2];
+                    right = d_nodes[idx2 + 1];
+                }
+                else {
+                    // each spot in the texture holds two children, that's why we devide the relative texture index by 2
+                    unsigned int tex_idx = ((idx2 - 2048) >> 1) * 3;
+                    float4 a = tex1Dfetch(t_bvh, tex_idx++);
+                    float4 b = tex1Dfetch(t_bvh, tex_idx++);
+                    float4 c = tex1Dfetch(t_bvh, tex_idx++);
+                    left = bvh_node(a.x, a.y, a.z, a.w, b.x, b.y);
+                    right = bvh_node(b.z, b.w, c.x, c.y, c.z, c.w);
+                }
+
+                const float left_t = hit_bbox(left, r, FLT_MAX);
+                const bool traverse_left = left_t < FLT_MAX;
+                const float right_t = hit_bbox(right, r, FLT_MAX);
+                const bool traverse_right = right_t < FLT_MAX;
+
+                const bool swap = right_t < left_t; // right child is closer
+
+                if (traverse_left || traverse_right) {
+                    idx = idx2 + swap; // intersect closer node next
+                    if (traverse_left && traverse_right) // push farther node into the stack
+                        bitstack = (bitstack << 2) + (swap ? BIT_LEFT : BIT_RIGHT);
+                    else // push parent bit to the stack to backtrack later
+                        bitstack = (bitstack << 2) + BIT_PARENT;
+                }
+                else {
+                    pop_bitstack(bitstack, idx);
+                }
+            }
+            else {
+                int m = (idx - sc.count) * lane_size_float;
+                #pragma unroll
+                for (int i = 0; i < lane_size_spheres && !found; i++) {
+                    float x = tex1Dfetch(t_spheres, m++);
+                    float y = tex1Dfetch(t_spheres, m++);
+                    float z = tex1Dfetch(t_spheres, m++);
+                    vec3 center(x, y, z);
+                    found = hit_point(center, r, 0.001f, FLT_MAX, rec);
+                }
+
+                if (found) // exit traversal once we find an intersection in any leaf
+                    idx = IDX_SENTINEL;
+                else
+                    pop_bitstack(bitstack, idx);
+            }
+
+            // some lanes may have already exited the loop, if not enough active thread are left, exit the loop
+            if (__popc(__activemask()) < DYNAMIC_FETCH_THRESHOLD)
+                break;
+        }
+
+        if (found) {
+            // finished traversing bvh
+            p.flag[pid] = p.flag[pid] | FLAG_SHADOW_HIT;
+        }
+    }
+}
+
+// for all non terminated rays, accounts for shadow hit, compute scattered ray and resets the flag
+__global__ void update(const render_params params, paths p) {
     const float sky_emissive = .2f;
 
     // kMaxActivePaths threads update all p.num_active_paths
@@ -324,7 +503,9 @@ __global__ void update(const render_params params, paths p) {
         const int hit_id = p.hit_id[pid];
         int clr_idx = params.sc.colors[hit_id] * 3;
         const vec3 albedo = vec3(d_colormap[clr_idx++], d_colormap[clr_idx++], d_colormap[clr_idx++]);
-        p.attentuation[pid] *= albedo;
+        
+        vec3 attenuation = p.attentuation[pid] * albedo;
+        p.attentuation[pid] = attenuation;
 
         // scatter ray, only if we didn't reach kMaxBounces
         bounce++;
@@ -340,23 +521,24 @@ __global__ void update(const render_params params, paths p) {
             p.r[pid] = ray(hit_p, target);
             p.state[pid] = state;
         }
-    }
-    else {
-        // primary rays (bounce = 0) return black
-        if (bounce > 0) {
-            const vec3 attenuation = p.attentuation[pid];
-            vec3 incoming;
-            if (hit_light(light_center, light_radius, p.r[pid], 0.001f, FLT_MAX))
-                incoming = attenuation * light_emissive;
-            else
-                incoming = attenuation * sky_emissive;
 
+        // account for light contribution if no shadow hit
+        if ((flag & FLAG_HAS_SHADOW) && !(flag & FLAG_SHADOW_HIT)) {
+            const vec3 incoming = p.emitted[pid] * attenuation;
             const unsigned int pixel_id = p.active_paths[pid];
             atomicAdd(params.fb[pixel_id].e, incoming.e[0]);
             atomicAdd(params.fb[pixel_id].e + 1, incoming.e[1]);
             atomicAdd(params.fb[pixel_id].e + 2, incoming.e[2]);
         }
-        
+    }
+    else {
+        if (bounce > 0) {
+            const vec3 incoming = p.attentuation[pid] * sky_emissive;
+            const unsigned int pixel_id = p.active_paths[pid];
+            atomicAdd(params.fb[pixel_id].e, incoming.e[0]);
+            atomicAdd(params.fb[pixel_id].e + 1, incoming.e[1]);
+            atomicAdd(params.fb[pixel_id].e + 2, incoming.e[2]);
+        }
         bounce = kMaxBounces; // mark path as terminated
     }
 
@@ -513,16 +695,34 @@ int main(int argc, char** argv) {
         {
             dim3 blocks(6400 * 2, 1);
             dim3 threads(MaxBlockWidth, MaxBlockHeight);
-            hit_bvh << <blocks, threads >> > (params, p);
+            trace_scattered << <blocks, threads >> > (params, p);
             checkCudaErrors(cudaGetLastError());
         }
-        // update kMaxActivePaths using equal number of threads
+
+        // generate shadow rays
+        {
+            const int threads = 128;
+            const int blocks = (maxActivePaths + threads - 1) / threads;
+            generate_shadow_raws << <blocks, threads >> > (params, p);
+            checkCudaErrors(cudaGetLastError());
+        }
+
+        // trace shadow rays
+        {
+            dim3 blocks(6400 * 2, 1);
+            dim3 threads(MaxBlockWidth, MaxBlockHeight);
+            trace_shadows << <blocks, threads >> > (params, p);
+            checkCudaErrors(cudaGetLastError());
+        }
+
+        // update paths accounting for intersection and light contribution
         {
             const int threads = 128;
             const int blocks = (maxActivePaths + threads - 1) / threads;
             update << <blocks, threads >> > (params, p);
             checkCudaErrors(cudaGetLastError());
         }
+
         // print metrics
         if (verbose) {
             print_metrics << <1, 1 >> > (params, p, iteration, maxActivePaths, (float)(clock() - start) / CLOCKS_PER_SEC);
