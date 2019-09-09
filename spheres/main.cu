@@ -686,7 +686,7 @@ int main(int argc, char** argv) {
         if (iteration > 0 && (iteration % numBouncesPerIter) == 0) {
             unsigned int num_active_paths;
             checkCudaErrors(cudaMemcpy((void*)& num_active_paths, (void*)p.metric_num_active_paths, sizeof(unsigned int), cudaMemcpyDeviceToHost));
-            if (num_active_paths == 0) {
+            if (num_active_paths < (maxActivePaths * 0.01f)) {
                 break;
             }
         }
