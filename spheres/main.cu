@@ -255,16 +255,16 @@ struct metrics {
     __device__ void reset(int pid, bool first) {
         if (pid == 0) {
             num_active_paths[0] = 0;
-            //counter.reset();
-            //cnt.reset();
+            counter.reset();
+            cnt.reset();
         }
         multi.reset(pid, first);
     }
 
     __device__ void print(int iteration) {
-        //counter.print(iteration);
+        counter.print(iteration);
         //cnt.print(iteration);
-        multi.print();
+        //multi.print();
     }
 };
 
@@ -444,13 +444,15 @@ __global__ void trace_scattered(const render_params params, paths p) {
 
     // Persistent threads: fetch and process rays in a loop.
 
-    int in_iter = 0;
+    //int in_iter = 0;
 
     while (true) {
         const int tidx = threadIdx.x;
         volatile int& pathBase = nextPathArray[threadIdx.y];
 
-        p.m.multi.increment(in_iter++, tidx);
+        //p.m.counter.increment(tidx);
+        //p.m.multi.increment(in_iter++, tidx);
+
         // identify which lanes are done
         const bool          terminated      = IS_DONE(idx);
         const unsigned int  maskTerminated  = __ballot_sync(__activemask(), terminated);
