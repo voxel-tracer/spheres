@@ -218,7 +218,7 @@ struct count_lanes {
         }
     }
 
-    __device__ void print(int iteration) {
+    __device__ void print(int iteration, float elapsedSeconds) {
         unsigned long long tot = total[0];
         if (tot > 0) {
             unsigned long long num100 = by100[0];
@@ -226,8 +226,8 @@ struct count_lanes {
             unsigned long long num50 = by50[0];
             unsigned long long num25 = by25[0];
             unsigned long long less25 = tot - num100 - num75 - num50 - num25;
-            printf("iteration %4d: total %7llu, 100%% %3.2f%%, >=75%% %3.2f%%, >=50%% %3.2f%%, >=25%% %3.2f%%, less %3.2f%%\n", iteration, tot,
-                RATIO(num100, tot), RATIO(num75, tot), RATIO(num50, tot), RATIO(num25, tot), RATIO(less25, tot));
+            printf("iteration %4d: elapsed %.2fs, total %7llu, 100%% %3.2f%%, >=75%% %3.2f%%, >=50%% %3.2f%%, >=25%% %3.2f%%, less %3.2f%%\n", 
+                iteration, elapsedSeconds, tot, RATIO(num100, tot), RATIO(num75, tot), RATIO(num50, tot), RATIO(num25, tot), RATIO(less25, tot));
         }
     }
 };
@@ -261,8 +261,8 @@ struct metrics {
         multi.reset(pid, first);
     }
 
-    __device__ void print(int iteration) {
-        counter.print(iteration);
+    __device__ void print(int iteration, float elapsedSeconds) {
+        counter.print(iteration, elapsedSeconds);
         //cnt.print(iteration);
         //multi.print();
     }
@@ -793,8 +793,8 @@ __global__ void update(const render_params params, paths p) {
     p.flag[pid] = bounce;
 }
 
-__global__ void print_metrics(metrics m, unsigned int iteration, unsigned int maxActivePaths) {
-    m.print(iteration);
+__global__ void print_metrics(metrics m, unsigned int iteration, unsigned int maxActivePaths, float elapsedSeconds) {
+    m.print(iteration, elapsedSeconds);
 }
 
 camera setup_camera(int nx, int ny, float dist) {
@@ -927,7 +927,7 @@ int main(int argc, char** argv) {
         if (iteration > 0 && (iteration % numBouncesPerIter) == 0) {
             unsigned int num_active_paths;
             checkCudaErrors(cudaMemcpy((void*)& num_active_paths, (void*)p.m.num_active_paths, sizeof(unsigned int), cudaMemcpyDeviceToHost));
-            if (num_active_paths < (maxActivePaths * 0.01f)) {
+            if (num_active_paths < (maxActivePaths * 0.05f)) {
                 break;
             }
         }
@@ -966,10 +966,10 @@ int main(int argc, char** argv) {
 
         // print metrics
         if (verbose) {
-            print_metrics << <1, 1 >> > (p.m, iteration, maxActivePaths);
+            print_metrics << <1, 1 >> > (p.m, iteration, maxActivePaths, (float)(clock() - start) / CLOCKS_PER_SEC);
             checkCudaErrors(cudaGetLastError());
         }
-        checkCudaErrors(cudaDeviceSynchronize());
+        //checkCudaErrors(cudaDeviceSynchronize());
 
         iteration++;
     }
