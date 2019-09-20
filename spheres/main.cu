@@ -162,7 +162,9 @@ struct counter {
             atomicAdd(active, num_active);
     }
 
-    __device__ void print(int iteration) {
+    __device__ void print(int iteration, bool last) {
+        if (!last) return;
+
         unsigned long long tot = total[0];
         unsigned long long act = active[0];
         if (tot > 0)
@@ -261,9 +263,9 @@ struct metrics {
         multi.reset(pid, first);
     }
 
-    __device__ void print(int iteration, float elapsedSeconds) {
-        counter.print(iteration, elapsedSeconds);
-        //cnt.print(iteration);
+    __device__ void print(int iteration, float elapsedSeconds, bool last) {
+        //counter.print(iteration, elapsedSeconds);
+        cnt.print(iteration, last);
         //multi.print();
     }
 };
@@ -468,13 +470,13 @@ __global__ void trace_scattered(const render_params params, paths p) {
             if (pid >= params.maxActivePaths)
                 return;
 
+            found = false; // always reset found to avoid writing hit information for terminated paths
             // setup ray if path not already terminated
             if ((p.flag[pid] & FLAG_BOUNCE_MASK) < kMaxBounces) {
                 // Fetch ray
                 r = p.r[pid];
 
                 // idx is already set to IDX_SENTINEL, but make sure we set found to false
-                found = false;
                 idx = 1;
                 closest = FLT_MAX;
                 bitstack = BIT_DONE;
@@ -793,8 +795,8 @@ __global__ void update(const render_params params, paths p) {
     p.flag[pid] = bounce;
 }
 
-__global__ void print_metrics(metrics m, unsigned int iteration, unsigned int maxActivePaths, float elapsedSeconds) {
-    m.print(iteration, elapsedSeconds);
+__global__ void print_metrics(metrics m, unsigned int iteration, unsigned int maxActivePaths, float elapsedSeconds, bool last) {
+    m.print(iteration, elapsedSeconds, last);
 }
 
 camera setup_camera(int nx, int ny, float dist) {
@@ -966,7 +968,7 @@ int main(int argc, char** argv) {
 
         // print metrics
         if (verbose) {
-            print_metrics << <1, 1 >> > (p.m, iteration, maxActivePaths, (float)(clock() - start) / CLOCKS_PER_SEC);
+            print_metrics << <1, 1 >> > (p.m, iteration, maxActivePaths, (float)(clock() - start) / CLOCKS_PER_SEC, false);
             checkCudaErrors(cudaGetLastError());
         }
         //checkCudaErrors(cudaDeviceSynchronize());
@@ -974,6 +976,9 @@ int main(int argc, char** argv) {
         iteration++;
     }
     cudaProfilerStop();
+
+    print_metrics << <1, 1 >> > (p.m, iteration, maxActivePaths, (float)(clock() - start) / CLOCKS_PER_SEC, true);
+    checkCudaErrors(cudaGetLastError());
 
     checkCudaErrors(cudaDeviceSynchronize());
     cerr << "\rrendered " << params.samples_count << " samples in " << (float)(clock() - start) / CLOCKS_PER_SEC << " seconds.                                    \n";
