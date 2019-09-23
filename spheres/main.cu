@@ -172,7 +172,59 @@ struct counter {
     }
 };
 
-struct count_lanes {
+struct HistoCounter {
+    int min;
+    int max;
+    int numBins;
+    int binWidth;
+
+    unsigned long long* bins;
+
+    __host__ HistoCounter() {}
+    __host__ HistoCounter(int _min, int _max, int _numBines) :min(_min), max(_max), numBins(_numBines + 2), binWidth((_max - _min) / _numBines) {}
+
+    __host__ void allocateDeviceMem() {
+        checkCudaErrors(cudaMalloc((void**)& bins, (numBins + 2) * sizeof(unsigned long long))); // + < min and >= max
+    }
+
+    __host__ void freeDeviceMem() const {
+        checkCudaErrors(cudaFree(bins));
+    }
+
+    __device__ void reset(int pid, bool first) {
+        if (pid < numBins)
+            bins[pid] = 0;
+    }
+
+    __device__ void increment(int value) {
+        // compute bin corresponding to value
+        int binId;
+        if (value < min)
+            binId = 0;
+        else if (value >= max)
+            binId = numBins - 1;
+        else // min <= value < max
+            binId = (value - min) / binWidth + 1; // +1 because bin 0 if for value < min
+
+        atomicAdd(bins + binId, 1);
+    }
+
+    __device__ void print(int iteration, float elapsedSeconds) const {
+        // sum all bins, so we can compute percentiles
+        unsigned long long total = 0;
+        for (size_t i = 0; i < numBins; i++)
+            total += bins[i];
+        if (total == 0)
+            return; // nothing to print
+        printf("iter %4d, tot %7llu, <%d: %3.2f%%, ", iteration, total, min, RATIO(bins[0], total));
+        int left = min;
+        for (size_t i = 1; i < numBins - 1; i++, left += binWidth)
+            printf("<%d: %3.2f%%, ", left + binWidth, RATIO(bins[i], total));
+        printf(">=%d: %3.2f%%\n", max, RATIO(bins[numBins - 1], total));
+    }
+};
+
+struct lanes_histo {
     unsigned long long* total;
     unsigned long long* by25;
     unsigned long long* by50;
@@ -220,7 +272,7 @@ struct count_lanes {
         }
     }
 
-    __device__ void print(int iteration, float elapsedSeconds) {
+    __device__ void print(int iteration, float elapsedSeconds) const {
         unsigned long long tot = total[0];
         if (tot > 0) {
             unsigned long long num100 = by100[0];
@@ -228,7 +280,7 @@ struct count_lanes {
             unsigned long long num50 = by50[0];
             unsigned long long num25 = by25[0];
             unsigned long long less25 = tot - num100 - num75 - num50 - num25;
-            printf("iteration %4d: elapsed %.2fs, total %7llu, 100%% %3.2f%%, >=75%% %3.2f%%, >=50%% %3.2f%%, >=25%% %3.2f%%, less %3.2f%%\n", 
+            printf("iter %4d: elapsed %.2fs, total %7llu, 100%% %3.2f%%, >=75%% %3.2f%%, >=50%% %3.2f%%, >=25%% %3.2f%%, less %3.2f%%\n", 
                 iteration, elapsedSeconds, tot, RATIO(num100, tot), RATIO(num75, tot), RATIO(num50, tot), RATIO(num25, tot), RATIO(less25, tot));
         }
     }
@@ -236,37 +288,45 @@ struct count_lanes {
 
 struct metrics {
     unsigned int* num_active_paths;
-    count_lanes counter;
-    struct counter cnt;
+    lanes_histo lanes_cnt;
+    counter cnt;
     multi_iter_warp_counter multi;
+    HistoCounter histo;
 
-    __host__ metrics() { multi = multi_iter_warp_counter(1000, 73); }
+    __host__ metrics() { 
+        multi = multi_iter_warp_counter(1000, 73);
+        histo = HistoCounter(8, 32, 3);
+    }
 
     __host__ void allocateDeviceMem() {
-        counter.allocateDeviceMem();
+        lanes_cnt.allocateDeviceMem();
         cnt.allocateDeviceMem();
         multi.allocateDeviceMem();
+        histo.allocateDeviceMem();
     }
 
     __host__ void freeDeviceMem() const {
-        counter.freeDeviceMem();
+        lanes_cnt.freeDeviceMem();
         cnt.freeDeviceMem();
         multi.freeDeviceMem();
+        histo.freeDeviceMem();
     }
 
     __device__ void reset(int pid, bool first) {
         if (pid == 0) {
             num_active_paths[0] = 0;
-            counter.reset();
+            lanes_cnt.reset();
             cnt.reset();
         }
         multi.reset(pid, first);
+        histo.reset(pid, first);
     }
 
-    __device__ void print(int iteration, float elapsedSeconds, bool last) {
-        //counter.print(iteration, elapsedSeconds);
-        cnt.print(iteration, last);
+    __device__ void print(int iteration, float elapsedSeconds, bool last) const {
+        //lanes_cnt.print(iteration, elapsedSeconds);
+        //cnt.print(iteration, last);
         //multi.print();
+        histo.print(iteration, elapsedSeconds);
     }
 };
 
@@ -446,14 +506,11 @@ __global__ void trace_scattered(const render_params params, paths p) {
 
     // Persistent threads: fetch and process rays in a loop.
 
-    //int in_iter = 0;
+    int in_iter = 0;
 
     while (true) {
         const int tidx = threadIdx.x;
         volatile int& pathBase = nextPathArray[threadIdx.y];
-
-        //p.m.counter.increment(tidx);
-        //p.m.multi.increment(in_iter++, tidx);
 
         // identify which lanes are done
         const bool          terminated      = IS_DONE(idx);
@@ -486,6 +543,8 @@ __global__ void trace_scattered(const render_params params, paths p) {
         // traversal
         const scene& sc = params.sc;
         while (!IS_DONE(idx)) {
+            in_iter++;
+
             // we already intersected ray with idx node, now we need to load its children and intersect the ray with them
             if (!IS_LEAF(idx)) {
                 // load left, right nodes
@@ -541,6 +600,11 @@ __global__ void trace_scattered(const render_params params, paths p) {
                     idx = IDX_SENTINEL;
                 else
                     pop_bitstack(bitstack, idx);
+            }
+
+            if (IS_DONE(idx)) {
+                p.m.histo.increment(in_iter);
+                in_iter = 0;
             }
 
             // some lanes may have already exited the loop, if not enough active thread are left, exit the loop
