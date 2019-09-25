@@ -179,7 +179,6 @@ struct counter {
     }
 };
 
-
 // counter that can handle multiple inner iterations
 struct MultiIterCounter {
     int print_out_iter;
@@ -292,11 +291,11 @@ struct HistoCounter {
             total += bins[i];
         if (total == 0)
             return; // nothing to print
-        printf("iter %4d, tot %7llu, <%d: %3.2f%%, ", iteration, total, min, RATIO(bins[0], total));
+        printf("iter %4d,tot %5llu,<%d:%6.2f%%,", iteration, total, min, RATIO(bins[0], total));
         int left = min;
         for (size_t i = 1; i < numBins - 1; i++, left += binWidth)
-            printf("<%d: %3.2f%%, ", left + binWidth, RATIO(bins[i], total));
-        printf(">=%d: %3.2f%%\n", max, RATIO(bins[numBins - 1], total));
+            printf("<%d:%6.2f%%,", left + binWidth, RATIO(bins[i], total));
+        printf(">=%d:%6.2f%%\n", max, RATIO(bins[numBins - 1], total));
     }
 };
 
@@ -371,9 +370,9 @@ struct metrics {
     MultiIterCounter multiIterCounter;
 
     __host__ metrics() { 
-        multi = multi_iter_warp_counter(12000, 73);
-        histo = HistoCounter(0, 500, 10);
-        multiIterCounter = MultiIterCounter(73, 12000);
+        multi = multi_iter_warp_counter(100, 73);
+        histo = HistoCounter(7000, 13000, 10);
+        multiIterCounter = MultiIterCounter(73, 100);
     }
 
     __host__ void allocateDeviceMem() {
@@ -406,8 +405,8 @@ struct metrics {
     __device__ void print(int iteration, float elapsedSeconds, bool last) const {
         //lanes_cnt.print(iteration, elapsedSeconds);
         //cnt.print(iteration, last);
-        multi.print();
-        //histo.print(iteration, elapsedSeconds);
+        //multi.print();
+        histo.print(iteration, elapsedSeconds);
         //multiIterCounter.print(last);
     }
 };
@@ -603,10 +602,14 @@ __global__ void trace_scattered(const render_params params, paths p) {
         const int           idxTerminated   = __popc(maskTerminated & ((1u << tidx) - 1));
 
         if (terminated) {
+
             // first terminated lane updates the base ray index
             if (idxTerminated == 0) {
                 pathBase = atomicAdd(p.next_path, numTerminated);
                 noMoreP = (pathBase + numTerminated) >= params.maxActivePaths;
+
+                if (in_iter > 0 && noMoreP) // we skip iter 0 to ignore warps that don't have any work at all
+                    p.m.histo.increment(in_iter);
             }
 
             pid = pathBase + idxTerminated;
@@ -686,11 +689,6 @@ __global__ void trace_scattered(const render_params params, paths p) {
                     idx = IDX_SENTINEL;
                 else
                     pop_bitstack(bitstack, idx);
-            }
-
-            if (IS_DONE(idx)) {
-                p.m.histo.increment(in_iter);
-                in_iter = 0;
             }
 
             // some lanes may have already exited the loop, if not enough active thread are left, exit the loop
