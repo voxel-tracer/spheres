@@ -371,7 +371,7 @@ struct metrics {
 
     __host__ metrics() { 
         multi = multi_iter_warp_counter(100, 73);
-        histo = HistoCounter(7000, 13000, 10);
+        histo = HistoCounter(8000, 10000, 10);
         multiIterCounter = MultiIterCounter(73, 100);
     }
 
@@ -589,6 +589,7 @@ __global__ void trace_scattered(const render_params params, paths p) {
     // Persistent threads: fetch and process rays in a loop.
 
     int in_iter = 0;
+    bool shouldExit = false;
 
     while (true) {
         const int tidx = threadIdx.x;
@@ -607,9 +608,6 @@ __global__ void trace_scattered(const render_params params, paths p) {
             if (idxTerminated == 0) {
                 pathBase = atomicAdd(p.next_path, numTerminated);
                 noMoreP = (pathBase + numTerminated) >= params.maxActivePaths;
-
-                if (in_iter > 0 && noMoreP) // we skip iter 0 to ignore warps that don't have any work at all
-                    p.m.histo.increment(in_iter);
             }
 
             pid = pathBase + idxTerminated;
@@ -694,6 +692,15 @@ __global__ void trace_scattered(const render_params params, paths p) {
             // some lanes may have already exited the loop, if not enough active thread are left, exit the loop
             if (!noMoreP && __popc(__activemask()) < DYNAMIC_FETCH_THRESHOLD)
                 break;
+
+            if (!shouldExit) {
+                shouldExit = noMoreP && __popc(__activemask()) <= 8;
+                if (shouldExit) {
+                    const int idxActive = __popc(__activemask() & ((1u << tidx) - 1));
+                    if (idxActive == 0)
+                        p.m.histo.increment(in_iter);
+                }
+            }
         }
 
         if (found && IS_DONE(idx)) {
