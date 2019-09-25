@@ -598,7 +598,6 @@ __global__ void trace_scattered(const render_params params, paths p) {
                 pathBase = atomicAdd(p.next_path, numTerminated);
                 noMoreP = (pathBase + numTerminated) >= params.maxActivePaths;
             }
-            shouldExit = shouldExit || noMoreP;
 
             pid = pathBase + idxTerminated;
             if (pid >= params.maxActivePaths) {
@@ -618,6 +617,9 @@ __global__ void trace_scattered(const render_params params, paths p) {
                 bitstack = BIT_DONE;
             }
         }
+
+        const int num_active = __popc(__activemask());
+        shouldExit = shouldExit || num_active <= 24;
 
         // traversal
         const scene& sc = params.sc;
@@ -683,9 +685,6 @@ __global__ void trace_scattered(const render_params params, paths p) {
 
             if (!shouldExit && IS_DONE(idx))
                 numDone++;
-
-            //const int num_active = __popc(__activemask());
-            //shouldExit = shouldExit || (noMoreP && num_active <= 32);
 
             // some lanes may have already exited the loop, if not enough active thread are left, exit the loop
             if (!noMoreP && __popc(__activemask()) < DYNAMIC_FETCH_THRESHOLD)
