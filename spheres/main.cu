@@ -71,13 +71,20 @@ struct multi_iter_warp_counter {
     }
 
     __device__ void reset(int pid, bool first) {
-        if (pid == 0) {
-            out_iter[0]++;
-            if (first) {
-                in_max[0] = 0;
-                in_iter[0] = 0;
+        if (first) {
+            if (pid < max_in_iter) {
+                total[pid] = 0;
+                by25[pid] = 0;
+                by50[pid] = 0;
+                by75[pid] = 0;
+                by100[pid] = 0;
             }
+            in_max[0] = 0;
+            out_iter[0] = 0;
+            in_iter[0] = 0;
         }
+        if (pid == 0)
+            out_iter[0]++;
     }
 
     __device__ void increment(int in_it, int lane_id) {
@@ -107,7 +114,7 @@ struct multi_iter_warp_counter {
         }
     }
 
-    __device__ void print() {
+    __device__ void print() const {
         if (out_iter[0] != print_out_iter)
             return;
 
@@ -119,7 +126,7 @@ struct multi_iter_warp_counter {
                 unsigned long long num50 = by50[i];
                 unsigned long long num25 = by25[i];
                 unsigned long long less25 = tot - num100 - num75 - num50 - num25;
-                printf("iteration %4d: total %7llu, 100%% %3.2f%%, >=75%% %3.2f%%, >=50%% %3.2f%%, >=25%% %3.2f%%, less %3.2f%%\n", i, tot,
+                printf("iteration %4d: total %7llu, 100%% %6.2f%%, >=75%% %6.2f%%, >=50%% %6.2f%%, >=25%% %6.2f%%, less %6.2f%%\n", i, tot,
                     RATIO(num100, tot), RATIO(num75, tot), RATIO(num50, tot), RATIO(num25, tot), RATIO(less25, tot));
             }
         }
@@ -169,6 +176,75 @@ struct counter {
         unsigned long long act = active[0];
         if (tot > 0)
             printf("iteration %4d: total %7llu, active %7llu %3.2f%%\n", iteration, tot, act, RATIO(act, tot));
+    }
+};
+
+
+// counter that can handle multiple inner iterations
+struct MultiIterCounter {
+    int print_out_iter;
+    int max_in_iter;
+
+    unsigned long long* values;
+    unsigned long long* in_iter;
+    int* out_iter; // outer iteration computed by this metric
+    int* in_max; // max in_iter encountered even if not recorded
+
+    __host__ MultiIterCounter() {}
+    __host__ MultiIterCounter(int _print_out_iter, int _max_in_iter): print_out_iter(_print_out_iter), max_in_iter(_max_in_iter) {}
+
+    __host__ void allocateDeviceMem() {
+        checkCudaErrors(cudaMalloc((void**)& values, max_in_iter * sizeof(unsigned long long)));
+        checkCudaErrors(cudaMalloc((void**)& in_iter, sizeof(unsigned long long)));
+        checkCudaErrors(cudaMalloc((void**)& out_iter, sizeof(int)));
+        checkCudaErrors(cudaMalloc((void**)& in_max, sizeof(int)));
+    }
+
+    __host__ void freeDeviceMem() const {
+        checkCudaErrors(cudaFree(values));
+        checkCudaErrors(cudaFree(in_iter));
+        checkCudaErrors(cudaFree(out_iter));
+        checkCudaErrors(cudaFree(in_max));
+    }
+
+    __device__ void reset(int pid, bool first) {
+        if (first) {
+            if (pid < max_in_iter)
+                values[pid] = 0;
+            in_max[0] = 0;
+            out_iter[0] = 0;
+            in_iter[0] = 0;
+        }
+        if (pid == 0)
+            out_iter[0]++;
+    }
+
+    __device__ void increment(int lane_id, int in_it) {
+        if (out_iter[0] != print_out_iter)
+            return;
+
+        atomicMax(in_max, in_it);
+
+        if (in_it < max_in_iter) {
+            // first active thread of the warp should increment the metrics
+            const int num_active = __popc(__activemask());
+            const int idx_lane = __popc(__activemask() & ((1u << lane_id) - 1));
+            if (idx_lane == 0)
+                atomicAdd(values + in_it, num_active);
+            atomicMax(in_iter, in_it);
+        }
+    }
+
+    __device__ void print(bool last) const {
+        if (out_iter[0] == print_out_iter) {
+            for (size_t i = 0; i < in_iter[0]; i += 40) {
+                printf("it: %5d ", i);
+                for (int j = 0; j < 40 && (i + j) < in_iter[0]; j++)
+                    printf("%4llu ", values[i + j]);
+                printf("\n");
+            }
+            printf("in_max %d\n", in_max[0]);
+        }
     }
 };
 
@@ -292,10 +368,12 @@ struct metrics {
     counter cnt;
     multi_iter_warp_counter multi;
     HistoCounter histo;
+    MultiIterCounter multiIterCounter;
 
     __host__ metrics() { 
-        multi = multi_iter_warp_counter(1000, 73);
-        histo = HistoCounter(8, 32, 3);
+        multi = multi_iter_warp_counter(12000, 73);
+        histo = HistoCounter(0, 500, 10);
+        multiIterCounter = MultiIterCounter(73, 12000);
     }
 
     __host__ void allocateDeviceMem() {
@@ -303,6 +381,7 @@ struct metrics {
         cnt.allocateDeviceMem();
         multi.allocateDeviceMem();
         histo.allocateDeviceMem();
+        multiIterCounter.allocateDeviceMem();
     }
 
     __host__ void freeDeviceMem() const {
@@ -310,6 +389,7 @@ struct metrics {
         cnt.freeDeviceMem();
         multi.freeDeviceMem();
         histo.freeDeviceMem();
+        multiIterCounter.freeDeviceMem();
     }
 
     __device__ void reset(int pid, bool first) {
@@ -320,13 +400,15 @@ struct metrics {
         }
         multi.reset(pid, first);
         histo.reset(pid, first);
+        multiIterCounter.reset(pid, first);
     }
 
     __device__ void print(int iteration, float elapsedSeconds, bool last) const {
         //lanes_cnt.print(iteration, elapsedSeconds);
         //cnt.print(iteration, last);
-        //multi.print();
-        histo.print(iteration, elapsedSeconds);
+        multi.print();
+        //histo.print(iteration, elapsedSeconds);
+        //multiIterCounter.print(last);
     }
 };
 
@@ -503,6 +585,7 @@ __global__ void trace_scattered(const render_params params, paths p) {
     // Initialize persistent threads.
     // given that each block is 32 thread wide, we can use threadIdx.x as a warpId
     __shared__ volatile int nextPathArray[MaxBlockHeight]; // Current ray index in global buffer.
+    __shared__ volatile bool noMorePaths[MaxBlockHeight]; // true when no more paths are available to fetch
 
     // Persistent threads: fetch and process rays in a loop.
 
@@ -511,6 +594,7 @@ __global__ void trace_scattered(const render_params params, paths p) {
     while (true) {
         const int tidx = threadIdx.x;
         volatile int& pathBase = nextPathArray[threadIdx.y];
+        volatile bool& noMoreP = noMorePaths[threadIdx.y];
 
         // identify which lanes are done
         const bool          terminated      = IS_DONE(idx);
@@ -520,8 +604,10 @@ __global__ void trace_scattered(const render_params params, paths p) {
 
         if (terminated) {
             // first terminated lane updates the base ray index
-            if (idxTerminated == 0)
+            if (idxTerminated == 0) {
                 pathBase = atomicAdd(p.next_path, numTerminated);
+                noMoreP = (pathBase + numTerminated) >= params.maxActivePaths;
+            }
 
             pid = pathBase + idxTerminated;
             if (pid >= params.maxActivePaths)
@@ -608,7 +694,7 @@ __global__ void trace_scattered(const render_params params, paths p) {
             }
 
             // some lanes may have already exited the loop, if not enough active thread are left, exit the loop
-            if (__popc(__activemask()) < DYNAMIC_FETCH_THRESHOLD)
+            if (!noMoreP && __popc(__activemask()) < DYNAMIC_FETCH_THRESHOLD)
                 break;
         }
 
