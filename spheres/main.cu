@@ -341,7 +341,7 @@ struct lanes_histo {
             unsigned long long num50 = by50[0];
             unsigned long long num25 = by25[0];
             unsigned long long less25 = tot - num100 - num75 - num50 - num25;
-            printf("iter %4d: elapsed %.2fs, total %7llu, 100%% %3.2f%%, >=75%% %3.2f%%, >=50%% %3.2f%%, >=25%% %3.2f%%, less %3.2f%%\n", 
+            printf("iter %4d: elapsed %.2fs, total %7llu, 100%% %6.2f%%, >=75%% %6.2f%%, >=50%% %6.2f%%, >=25%% %6.2f%%, less %6.2f%%\n", 
                 iteration, elapsedSeconds, tot, RATIO(num100, tot), RATIO(num75, tot), RATIO(num50, tot), RATIO(num25, tot), RATIO(less25, tot));
         }
     }
@@ -391,8 +391,8 @@ struct metrics {
     }
 
     __device__ void print(int iteration, float elapsedSeconds, bool last) const {
-        //lanes_cnt.print(iteration, elapsedSeconds);
-        cnt.print(iteration, last);
+        lanes_cnt.print(iteration, elapsedSeconds);
+        //cnt.print(iteration, last);
         //multi.print();
         //histo.print(iteration, elapsedSeconds);
         //multiIterCounter.print(last);
@@ -576,10 +576,6 @@ __global__ void trace_scattered(const render_params params, paths p) {
 
     // Persistent threads: fetch and process rays in a loop.
 
-    int in_iter = 0;
-    int numDone = 0;
-    bool shouldExit = false;
-
     while (true) {
         const int tidx = threadIdx.x;
         volatile int& pathBase = nextPathArray[threadIdx.y];
@@ -592,7 +588,6 @@ __global__ void trace_scattered(const render_params params, paths p) {
         const int           idxTerminated   = __popc(maskTerminated & ((1u << tidx) - 1));
 
         if (terminated) {
-
             // first terminated lane updates the base ray index
             if (idxTerminated == 0) {
                 pathBase = atomicAdd(p.next_path, numTerminated);
@@ -601,7 +596,6 @@ __global__ void trace_scattered(const render_params params, paths p) {
 
             pid = pathBase + idxTerminated;
             if (pid >= params.maxActivePaths) {
-                p.m.cnt.increment(numDone);
                 return;
             }
 
@@ -618,13 +612,15 @@ __global__ void trace_scattered(const render_params params, paths p) {
             }
         }
 
-        const int num_active = __popc(__activemask());
-        shouldExit = shouldExit || num_active <= 24;
+        //if (__popc(__activemask()) < 16) {
+        //    // just mark the path as no hit
+        //    idx = IDX_SENTINEL;
+        //}
 
         // traversal
         const scene& sc = params.sc;
         while (!IS_DONE(idx)) {
-            in_iter++;
+            //p.m.lanes_cnt.increment(tidx);
 
             // we already intersected ray with idx node, now we need to load its children and intersect the ray with them
             if (!IS_LEAF(idx)) {
@@ -682,9 +678,6 @@ __global__ void trace_scattered(const render_params params, paths p) {
                 else
                     pop_bitstack(bitstack, idx);
             }
-
-            if (!shouldExit && IS_DONE(idx))
-                numDone++;
 
             // some lanes may have already exited the loop, if not enough active thread are left, exit the loop
             if (!noMoreP && __popc(__activemask()) < DYNAMIC_FETCH_THRESHOLD)
