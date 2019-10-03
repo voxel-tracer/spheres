@@ -399,6 +399,15 @@ struct metrics {
     }
 };
 
+typedef enum pathstate {
+    DONE,           // nothing more to do for this path
+    SCATTER,        // path need to traverse the BVH tree
+    NO_HIT,         // path didn't hit any primitive
+    HIT,            // path hit a primitive
+    SHADOW,         // path hit a primitive and generated a shadow ray
+    HIT_AND_LIGHT  // path hit a primitive and its shadow ray didn't hit any primitive
+} pathstate;
+
 struct paths {
     ull* next_sample; // used by init() to track next sample to fetch
 
@@ -411,18 +420,14 @@ struct paths {
     rand_state* state;
     vec3* attentuation;
     vec3* emitted;
-    unsigned short* flag;
+    unsigned short* bounce;
+    pathstate* pstate;
     int* hit_id;
     vec3* hit_normal;
     float* hit_t;
 
     metrics m;
 };
-
-#define FLAG_BOUNCE_MASK    0xF
-#define FLAG_HAS_HIT        0x10
-#define FLAG_HAS_SHADOW     0x20
-#define FLAG_SHADOW_HIT     0x40
 
 void setup_paths(paths& p, int nx, int ny, int ns, unsigned int maxActivePaths) {
     // at any given moment only kMaxActivePaths at most are active at the same time
@@ -432,7 +437,8 @@ void setup_paths(paths& p, int nx, int ny, int ns, unsigned int maxActivePaths) 
     checkCudaErrors(cudaMalloc((void**)& p.state, num_paths * sizeof(rand_state)));
     checkCudaErrors(cudaMalloc((void**)& p.attentuation, num_paths * sizeof(vec3)));
     checkCudaErrors(cudaMalloc((void**)& p.emitted, num_paths * sizeof(vec3)));
-    checkCudaErrors(cudaMalloc((void**)& p.flag, num_paths * sizeof(unsigned short)));
+    checkCudaErrors(cudaMalloc((void**)& p.bounce, num_paths * sizeof(unsigned short)));
+    checkCudaErrors(cudaMalloc((void**)& p.pstate, num_paths * sizeof(pathstate)));
     checkCudaErrors(cudaMalloc((void**)& p.hit_id, num_paths * sizeof(int)));
     checkCudaErrors(cudaMalloc((void**)& p.hit_normal, num_paths * sizeof(vec3)));
     checkCudaErrors(cudaMalloc((void**)& p.hit_t, num_paths * sizeof(float)));
@@ -452,7 +458,8 @@ void free_paths(const paths& p) {
     checkCudaErrors(cudaFree(p.state));
     checkCudaErrors(cudaFree(p.attentuation));
     checkCudaErrors(cudaFree(p.emitted));
-    checkCudaErrors(cudaFree(p.flag));
+    checkCudaErrors(cudaFree(p.bounce));
+    checkCudaErrors(cudaFree(p.pstate));
     checkCudaErrors(cudaFree(p.hit_id));
     checkCudaErrors(cudaFree(p.hit_normal));
     checkCudaErrors(cudaFree(p.hit_t));
@@ -479,18 +486,18 @@ __global__ void init(const render_params params, paths p, bool first, const came
         return;
 
     rand_state state;
-    unsigned short bounce;
+    pathstate pstate;
     if (first) {
         // this is the very first init, all paths are marked terminated, and we don't have a valid random state yet
         state = (wang_hash(pid) * 336343633) | 1;
-        bounce = kMaxBounces;
+        pstate = DONE;
     } else {
         state = p.state[pid];
-        bounce = p.flag[pid] & FLAG_BOUNCE_MASK;
+        pstate = p.pstate[pid];
     }
 
     // generate all terminated paths
-    const bool          terminated     = bounce == kMaxBounces;
+    const bool          terminated     = pstate == DONE;
     const unsigned int  maskTerminated = __ballot_sync(__activemask(), terminated);
     const int           numTerminated  = __popc(maskTerminated);
     const int           idxTerminated  = __popc(maskTerminated & ((1u << threadIdx.x) - 1));
@@ -521,7 +528,8 @@ __global__ void init(const render_params params, paths p, bool first, const came
         p.r[pid] = cam.get_ray(u, v, state);
         p.state[pid] = state;
         p.attentuation[pid] = vec3(1, 1, 1);
-        p.flag[pid] = 0;
+        p.bounce[pid] = 0;
+        p.pstate[pid] = SCATTER;
     }
 
     // path still active or has just been generated
@@ -580,6 +588,7 @@ __global__ void trace_scattered(const render_params params, paths p) {
         const int tidx = threadIdx.x;
         volatile int& pathBase = nextPathArray[threadIdx.y];
         volatile bool& noMoreP = noMorePaths[threadIdx.y];
+        pathstate pstate;
 
         // identify which lanes are done
         const bool          terminated      = IS_DONE(idx);
@@ -601,7 +610,8 @@ __global__ void trace_scattered(const render_params params, paths p) {
 
             found = false; // always reset found to avoid writing hit information for terminated paths
             // setup ray if path not already terminated
-            if ((p.flag[pid] & FLAG_BOUNCE_MASK) < kMaxBounces) {
+            pstate = p.pstate[pid];
+            if (pstate == SCATTER) {
                 // Fetch ray
                 r = p.r[pid];
 
@@ -611,11 +621,6 @@ __global__ void trace_scattered(const render_params params, paths p) {
                 bitstack = BIT_DONE;
             }
         }
-
-        //if (__popc(__activemask()) < 16) {
-        //    // just mark the path as no hit
-        //    idx = IDX_SENTINEL;
-        //}
 
         // traversal
         const scene& sc = params.sc;
@@ -684,12 +689,16 @@ __global__ void trace_scattered(const render_params params, paths p) {
                 break;
         }
 
-        if (found && IS_DONE(idx)) {
-            // finished traversing bvh
-            p.hit_id[pid] = rec.idx;
-            p.hit_normal[pid] = rec.n;
-            p.hit_t[pid] = rec.t;
-            p.flag[pid] = p.flag[pid] | FLAG_HAS_HIT;
+        if (pstate == SCATTER && IS_DONE(idx)) {
+            if (found) {
+                // finished traversing bvh
+                p.hit_id[pid] = rec.idx;
+                p.hit_normal[pid] = rec.n;
+                p.hit_t[pid] = rec.t;
+                p.pstate[pid] = HIT;
+            } else {
+                p.pstate[pid] = NO_HIT;
+            }
         }
     }
 }
@@ -711,8 +720,7 @@ __global__ void generate_shadow_raws(const render_params params, paths p) {
         return;
 
     // if the path has no intersection, which includes terminated paths, do nothing
-    const unsigned short flag = p.flag[pid];
-    if (!(flag & FLAG_HAS_HIT))
+    if (p.pstate[pid] != HIT)
         return;
 
     const ray r = p.r[pid];
@@ -744,7 +752,7 @@ __global__ void generate_shadow_raws(const render_params params, paths p) {
     const float omega = 2 * kPI * (1.0f - cosAMax);
     p.shadow[pid] = ray(hit_p, l);
     p.emitted[pid] = vec3(light_emissive, light_emissive, light_emissive) * dotl * omega / kPI;
-    p.flag[pid] = flag | FLAG_HAS_SHADOW;
+    p.pstate[pid] = SHADOW;
 }
 
 // traces all paths that have FLAG_HAS_SHADOW set, sets FLAG_SHADOW_HIT to true if there is a hit
@@ -770,6 +778,7 @@ __global__ void trace_shadows(const render_params params, paths p) {
     while (true) {
         const int tidx = threadIdx.x;
         volatile int& pathBase = nextPathArray[threadIdx.y];
+        pathstate pstate;
 
         // identify which lanes are done
         const bool          terminated = IS_DONE(idx);
@@ -787,7 +796,8 @@ __global__ void trace_shadows(const render_params params, paths p) {
                 return;
 
             // setup ray if path has a shadow ray
-            if ((p.flag[pid] & FLAG_HAS_SHADOW)) {
+            pstate = p.pstate[pid];
+            if (pstate == SHADOW) {
                 // Fetch ray
                 r = p.shadow[pid];
 
@@ -861,10 +871,8 @@ __global__ void trace_shadows(const render_params params, paths p) {
             }
         }
 
-        if (found) {
-            // finished traversing bvh
-            p.flag[pid] = p.flag[pid] | FLAG_SHADOW_HIT;
-        }
+        if (pstate == SHADOW)
+            p.pstate[pid] = found ? HIT : HIT_AND_LIGHT;
     }
 }
 
@@ -878,13 +886,13 @@ __global__ void update(const render_params params, paths p) {
         return;
 
     // is the path already done ?
-    unsigned short flag = p.flag[pid];
-    unsigned short bounce = flag & FLAG_BOUNCE_MASK;
-    if (bounce == kMaxBounces)
+    pathstate pstate = p.pstate[pid];
+    if (pstate == DONE)
         return; // yup, done and already taken care of
+    unsigned short bounce = p.bounce[pid];
 
     // did the ray hit a primitive ?
-    if (flag & FLAG_HAS_HIT) {
+    if (pstate == HIT || pstate == HIT_AND_LIGHT) {
         // update path attenuation
         const int hit_id = p.hit_id[pid];
         int clr_idx = params.sc.colors[hit_id] * 3;
@@ -892,6 +900,15 @@ __global__ void update(const render_params params, paths p) {
         
         vec3 attenuation = p.attentuation[pid] * albedo;
         p.attentuation[pid] = attenuation;
+
+        // account for light contribution if no shadow hit
+        if (pstate == HIT_AND_LIGHT) {
+            const vec3 incoming = p.emitted[pid] * attenuation;
+            const unsigned int pixel_id = p.active_paths[pid];
+            atomicAdd(params.fb[pixel_id].e, incoming.e[0]);
+            atomicAdd(params.fb[pixel_id].e + 1, incoming.e[1]);
+            atomicAdd(params.fb[pixel_id].e + 2, incoming.e[2]);
+        }
 
         // scatter ray, only if we didn't reach kMaxBounces
         bounce++;
@@ -906,15 +923,9 @@ __global__ void update(const render_params params, paths p) {
 
             p.r[pid] = ray(hit_p, target);
             p.state[pid] = state;
-        }
-
-        // account for light contribution if no shadow hit
-        if ((flag & FLAG_HAS_SHADOW) && !(flag & FLAG_SHADOW_HIT)) {
-            const vec3 incoming = p.emitted[pid] * attenuation;
-            const unsigned int pixel_id = p.active_paths[pid];
-            atomicAdd(params.fb[pixel_id].e, incoming.e[0]);
-            atomicAdd(params.fb[pixel_id].e + 1, incoming.e[1]);
-            atomicAdd(params.fb[pixel_id].e + 2, incoming.e[2]);
+            pstate = SCATTER;
+        } else {
+            pstate = DONE;
         }
     }
     else {
@@ -925,10 +936,11 @@ __global__ void update(const render_params params, paths p) {
             atomicAdd(params.fb[pixel_id].e + 1, incoming.e[1]);
             atomicAdd(params.fb[pixel_id].e + 2, incoming.e[2]);
         }
-        bounce = kMaxBounces; // mark path as terminated
+        pstate = DONE;
     }
 
-    p.flag[pid] = bounce;
+    p.pstate[pid] = pstate;
+    p.bounce[pid] = bounce;
 }
 
 __global__ void print_metrics(metrics m, unsigned int iteration, unsigned int maxActivePaths, float elapsedSeconds, bool last) {
