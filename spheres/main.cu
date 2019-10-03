@@ -472,7 +472,7 @@ void free_paths(const paths& p) {
     p.m.freeDeviceMem();
 }
 
-__global__ void init(const render_params params, paths p, bool first, const camera cam) {
+__global__ void fetch_samples(const render_params params, paths p, bool first, const camera cam) {
     // kMaxActivePaths threads are started to fetch the samples from all_sample_pool and initialize the paths
     // to keep things simple a block contains a single warp so that we only need to keep a single shared nextSample per block
 
@@ -1068,7 +1068,7 @@ int main(int argc, char** argv) {
         {
             const int threads = 32; // 1 warp per block
             const int blocks = (maxActivePaths + threads - 1) / threads;
-            init << <blocks, threads >> > (params, p, iteration == 0, cam);
+            fetch_samples <<<blocks, threads >>> (params, p, iteration == 0, cam);
             checkCudaErrors(cudaGetLastError());
         }
 
