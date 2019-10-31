@@ -88,6 +88,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="camera.h" />
+    <ClInclude Include="options.h" />
     <ClInclude Include="ray.h" />
     <ClInclude Include="rnd.h" />
     <ClInclude Include="scene.h" />

@@ -5,6 +5,8 @@
 #include "camera.h"
 #include "scene.h"
 
+#include "options.h"
+
 #define STBI_MSC_SECURE_CRT
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
@@ -994,28 +996,15 @@ int cmpfunc(const void * a, const void * b) {
         return 0;
 }
 
-#define ARG_INT(idx, def)   (argc > idx ? strtol(argv[idx], NULL, 10) : def)
-
 int main(int argc, char** argv) {
-    if (argc < 2) {
-        cerr << "usage spheres file_name [width=1200] [height=1200] [num_samples=1] [camera_dist=100] [maxActivePaths=1M] [numBouncesPerIter=4] [colormap=viridis.csv] [verbose]";
-        exit(-1);
-    }
-    char* input = argv[1];
-    const int nx = ARG_INT(2, 1200);
-    const int ny = ARG_INT(3, 1200);
-    const int ns = ARG_INT(4, 10);
-    const int dist = ARG_INT(5, 100);
-    const int maxActivePaths = ARG_INT(6, 1024 * 1024);
-    const int numBouncesPerIter = ARG_INT(7, 4);
-    const char* colormap = (argc > 8) ? argv[8] : "viridis.csv";
-    const bool verbose = (argc > 9 && !strcmp(argv[9], "verbose"));
+    options opt;
+    parse_args(argc, argv, opt);
 
-    const bool is_csv = strncmp(input + strlen(input) - 4, ".csv", 4) == 0;
+    const bool is_csv = strncmp(opt.input + strlen(opt.input) - 4, ".csv", 4) == 0;
     
-    cerr << "Rendering a " << nx << "x" << ny << " image with " << ns << " samples per pixel, maxActivePaths = " << maxActivePaths << ", numBouncesPerIter = " << numBouncesPerIter << "\n";
+    cerr << "Rendering a " << opt.nx << "x" << opt.ny << " image with " << opt.ns << " samples per pixel, maxActivePaths = " << opt.maxActivePaths << ", numBouncesPerIter = " << opt.numBouncesPerIter << "\n";
 
-    int num_pixels = nx * ny;
+    int num_pixels = opt.nx * opt.ny;
     size_t fb_size = num_pixels * sizeof(vec3);
 
     // allocate FB
@@ -1025,7 +1014,7 @@ int main(int argc, char** argv) {
 
 
     // load colormap
-    vector<vector<float>> data = parse2DCsvFile(colormap);
+    vector<vector<float>> data = parse2DCsvFile(opt.colormap);
     std::cout << "colormap contains " << data.size() << " points\n";
     float *_viridis_data = new float[data.size() * 3];
     int idx = 0;
@@ -1036,26 +1025,26 @@ int main(int argc, char** argv) {
     }
     // setup scene
     scene sc;
-    setup_scene(input, sc, is_csv, _viridis_data);
+    setup_scene(opt.input, sc, is_csv, _viridis_data);
     delete[] _viridis_data;
     _viridis_data = NULL;
 
-    camera cam = setup_camera(nx, ny, dist);
+    camera cam = setup_camera(opt.nx, opt.ny, opt.dist);
     vec3* h_fb = new vec3[fb_size];
 
     render_params params;
     params.fb = d_fb;
     params.sc = sc;
-    params.width = nx;
-    params.height = ny;
-    params.spp = ns;
-    params.maxActivePaths = maxActivePaths;
-    params.samples_count = nx;
-    params.samples_count *= ny;
-    params.samples_count *= ns;
+    params.width = opt.nx;
+    params.height = opt.ny;
+    params.spp = opt.ns;
+    params.maxActivePaths = opt.maxActivePaths;
+    params.samples_count = opt.nx;
+    params.samples_count *= opt.ny;
+    params.samples_count *= opt.ns;
 
     paths p;
-    setup_paths(p, nx, ny, ns, maxActivePaths);
+    setup_paths(p, opt.nx, opt.ny, opt.ns, opt.maxActivePaths);
 
     cout << "started renderer\n" << std::flush;
     clock_t start = clock();
@@ -1067,17 +1056,17 @@ int main(int argc, char** argv) {
         // init kMaxActivePaths using equal number of threads
         {
             const int threads = 32; // 1 warp per block
-            const int blocks = (maxActivePaths + threads - 1) / threads;
+            const int blocks = (opt.maxActivePaths + threads - 1) / threads;
             fetch_samples <<<blocks, threads >>> (params, p, iteration == 0, cam);
             checkCudaErrors(cudaGetLastError());
         }
 
         // check if not all paths terminated
         // we don't want to check the metric after each bounce, we do it every numBouncesPerIter iterations
-        if (iteration > 0 && (iteration % numBouncesPerIter) == 0) {
+        if (iteration > 0 && (iteration % opt.numBouncesPerIter) == 0) {
             unsigned int num_active_paths;
             checkCudaErrors(cudaMemcpy((void*)& num_active_paths, (void*)p.m.num_active_paths, sizeof(unsigned int), cudaMemcpyDeviceToHost));
-            if (num_active_paths < (maxActivePaths * 0.05f)) {
+            if (num_active_paths < (opt.maxActivePaths * 0.05f)) {
                 break;
             }
         }
@@ -1093,7 +1082,7 @@ int main(int argc, char** argv) {
         // generate shadow rays
         {
             const int threads = 128;
-            const int blocks = (maxActivePaths + threads - 1) / threads;
+            const int blocks = (opt.maxActivePaths + threads - 1) / threads;
             generate_shadow_raws << <blocks, threads >> > (params, p);
             checkCudaErrors(cudaGetLastError());
         }
@@ -1109,14 +1098,14 @@ int main(int argc, char** argv) {
         // update paths accounting for intersection and light contribution
         {
             const int threads = 128;
-            const int blocks = (maxActivePaths + threads - 1) / threads;
+            const int blocks = (opt.maxActivePaths + threads - 1) / threads;
             update << <blocks, threads >> > (params, p);
             checkCudaErrors(cudaGetLastError());
         }
 
         // print metrics
-        if (verbose) {
-            print_metrics << <1, 1 >> > (p.m, iteration, maxActivePaths, (float)(clock() - start) / CLOCKS_PER_SEC, false);
+        if (opt.verbose) {
+            print_metrics << <1, 1 >> > (p.m, iteration, opt.maxActivePaths, (float)(clock() - start) / CLOCKS_PER_SEC, false);
             checkCudaErrors(cudaGetLastError());
         }
         //checkCudaErrors(cudaDeviceSynchronize());
@@ -1125,7 +1114,7 @@ int main(int argc, char** argv) {
     }
     cudaProfilerStop();
 
-    print_metrics << <1, 1 >> > (p.m, iteration, maxActivePaths, (float)(clock() - start) / CLOCKS_PER_SEC, true);
+    print_metrics << <1, 1 >> > (p.m, iteration, opt.maxActivePaths, (float)(clock() - start) / CLOCKS_PER_SEC, true);
     checkCudaErrors(cudaGetLastError());
 
     checkCudaErrors(cudaDeviceSynchronize());
@@ -1134,8 +1123,8 @@ int main(int argc, char** argv) {
     // Output FB as Image
     checkCudaErrors(cudaMemcpy(h_fb, d_fb, fb_size, cudaMemcpyDeviceToHost));
     char file_name[100];
-    sprintf(file_name, "%s_%dx%dx%d_%d_bvh.png", input, nx, ny, ns, dist);
-    write_image(file_name, h_fb, nx, ny, ns);
+    sprintf(file_name, "%s_%dx%dx%d_%d_bvh.png", opt.input, opt.nx, opt.ny, opt.ns, opt.dist);
+    write_image(file_name, h_fb, opt.nx, opt.ny, opt.ns);
     delete[] h_fb;
     h_fb = NULL;
 
