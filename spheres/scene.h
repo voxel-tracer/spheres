@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cuda_runtime.h>
+
 #include "vec3.h"
 #include "sphere.h"
 
@@ -13,11 +15,9 @@
 //#undef NDEBUG
 #include <cassert>
 
-using namespace std;
+#include "constants.h"
 
-const unsigned int lane_size_float = 64 / sizeof(float);
-const unsigned int lane_size_spheres = lane_size_float / 3;
-const unsigned int lane_padding_float = lane_size_float - lane_size_spheres * 3;
+using namespace std;
 
 // limited version of checkCudaErrors from helper_cuda.h in CUDA examples
 #define checkCudaErrors(val) check_cuda( (val), #val, __FILE__, __LINE__ )

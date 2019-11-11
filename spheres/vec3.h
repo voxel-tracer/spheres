@@ -5,7 +5,7 @@
 #include <stdlib.h>
 #include <iostream>
 
-#include <curand_kernel.h>
+#include <host_defines.h>
 
 class vec3  {
 

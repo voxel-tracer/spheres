@@ -1,10 +1,10 @@
 #ifndef CAMERAH
 #define CAMERAH
 
-#include <curand_kernel.h>
+#include <host_defines.h>
 #include "ray.h"
-
-#define kPI 3.1415926f
+#include "rnd.h"
+#include "constants.h"
 
 class camera {
 public:

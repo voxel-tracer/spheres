@@ -4,7 +4,7 @@
 #include "ray.h"
 #include "camera.h"
 #include "scene.h"
-
+#include "rnd.h"
 #include "options.h"
 
 #define STBI_MSC_SECURE_CRT
