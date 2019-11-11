@@ -21,12 +21,14 @@ typedef unsigned long long ull;
 
 struct render_params {
     vec3* fb;
-    scene sc;
+    int leaf_offset;
     unsigned int width;
     unsigned int height;
     unsigned int spp;
     unsigned int maxActivePaths;
     ull samples_count;
+
+    int* colors;
 };
 
 #define RATIO(x,a)  (100.0 * x / a)
@@ -541,7 +543,7 @@ __global__ void fetch_samples(const render_params params, paths p, bool first, c
 
 #define IDX_SENTINEL    0
 #define IS_DONE(idx)    (idx == IDX_SENTINEL)
-#define IS_LEAF(idx)    (idx >= sc.count)
+#define IS_LEAF(idx)    (idx >= params.leaf_offset)
 
 #define BIT_DONE        3
 #define BIT_MASK        3
@@ -625,7 +627,6 @@ __global__ void trace_scattered(const render_params params, paths p) {
         }
 
         // traversal
-        const scene& sc = params.sc;
         while (!IS_DONE(idx)) {
             //p.m.lanes_cnt.increment(tidx);
 
@@ -666,7 +667,7 @@ __global__ void trace_scattered(const render_params params, paths p) {
                     pop_bitstack(bitstack, idx);
                 }
             } else {
-                int m = (idx - sc.count) * lane_size_float;
+                int m = (idx - params.leaf_offset) * lane_size_float;
                 #pragma unroll
                 for (int i = 0; i < lane_size_spheres; i++) {
                     float x = tex1Dfetch(t_spheres, m++);
@@ -676,7 +677,7 @@ __global__ void trace_scattered(const render_params params, paths p) {
                     if (hit_point(center, r, 0.001f, closest, rec)) {
                         found = true;
                         closest = rec.t;
-                        rec.idx = (idx - sc.count) * lane_size_spheres + i;
+                        rec.idx = (idx - params.leaf_offset) * lane_size_spheres + i;
                     }
                 }
 
@@ -811,7 +812,6 @@ __global__ void trace_shadows(const render_params params, paths p) {
         }
 
         // traversal
-        const scene& sc = params.sc;
         while (!IS_DONE(idx)) {
             // we already intersected ray with idx node, now we need to load its children and intersect the ray with them
             if (!IS_LEAF(idx)) {
@@ -851,7 +851,7 @@ __global__ void trace_shadows(const render_params params, paths p) {
                 }
             }
             else {
-                int m = (idx - sc.count) * lane_size_float;
+                int m = (idx - params.leaf_offset) * lane_size_float;
                 #pragma unroll
                 for (int i = 0; i < lane_size_spheres && !found; i++) {
                     float x = tex1Dfetch(t_spheres, m++);
@@ -897,7 +897,7 @@ __global__ void update(const render_params params, paths p) {
     if (pstate == HIT || pstate == HIT_AND_LIGHT) {
         // update path attenuation
         const int hit_id = p.hit_id[pid];
-        int clr_idx = params.sc.colors[hit_id] * 3;
+        int clr_idx = params.colors[hit_id] * 3;
         const vec3 albedo = vec3(d_colormap[clr_idx++], d_colormap[clr_idx++], d_colormap[clr_idx++]);
         
         vec3 attenuation = p.attentuation[pid] * albedo;
@@ -1024,8 +1024,9 @@ int main(int argc, char** argv) {
         _viridis_data[idx++] = (float)l[2];
     }
     // setup scene
-    scene sc;
-    setup_scene(opt.input, sc, is_csv, _viridis_data);
+    int num_nodes;
+    int* d_colors;
+    setup_scene(opt.input, is_csv, _viridis_data, &d_colors, num_nodes);
     delete[] _viridis_data;
     _viridis_data = NULL;
 
@@ -1034,7 +1035,8 @@ int main(int argc, char** argv) {
 
     render_params params;
     params.fb = d_fb;
-    params.sc = sc;
+    params.leaf_offset = num_nodes / 2;
+    params.colors = d_colors;
     params.width = opt.nx;
     params.height = opt.ny;
     params.spp = opt.ns;
@@ -1130,7 +1132,7 @@ int main(int argc, char** argv) {
 
     // clean up
     free_paths(p);
-    releaseScene(sc);
+    releaseScene(d_colors);
     checkCudaErrors(cudaDeviceSynchronize());
     checkCudaErrors(cudaGetLastError());
     checkCudaErrors(cudaFree(params.fb));

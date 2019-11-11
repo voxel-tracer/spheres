@@ -111,11 +111,6 @@ texture<float> t_spheres;
 float* d_bvh_buf;
 float* d_spheres_buf;
 
-struct scene {
-    int count;
-    int *colors;
-};
-
 int box_x_compare(const void* a, const void* b) {
     float xa = ((sphere*)a)->center.x();
     float xb = ((sphere*)b)->center.x();
@@ -250,8 +245,8 @@ void load_from_csv(const char *input, sphere **spheres, bvh_node **nodes, int &n
     num_nodes = half_num_nodes * 2;
 }
 
-void setup_scene(char *input, scene &sc, bool csv, float *colormap) {
-    int num_spheres, num_nodes;
+void setup_scene(char *input, bool csv, float *colormap, int **d_colors, int& num_nodes) {
+    int num_spheres;
     bvh_node *nodes;
     sphere *spheres;
 
@@ -262,7 +257,6 @@ void setup_scene(char *input, scene &sc, bool csv, float *colormap) {
     else {
         load_from_binary(input, &spheres, &nodes, num_spheres, num_nodes);
     }
-    sc.count = num_nodes / 2;
 
     // once we build the tree, copy the first 2048 nodes to constant memory
     const int const_size = min(2048, num_nodes);
@@ -303,8 +297,8 @@ void setup_scene(char *input, scene &sc, bool csv, float *colormap) {
     }
     assert(idx == scene_size_float);
 
-    checkCudaErrors(cudaMalloc((void **)&sc.colors, num_spheres * sizeof(int)));
-    checkCudaErrors(cudaMemcpy(sc.colors, colors, num_spheres * sizeof(int), cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMalloc((void **) d_colors, num_spheres * sizeof(int)));
+    checkCudaErrors(cudaMemcpy(*d_colors, colors, num_spheres * sizeof(int), cudaMemcpyHostToDevice));
 
     checkCudaErrors(cudaMalloc((void**)& d_spheres_buf, spheres_size_float * sizeof(float)));
     checkCudaErrors(cudaMemcpy(d_spheres_buf, floats, spheres_size_float * sizeof(float), cudaMemcpyHostToDevice));
@@ -334,11 +328,11 @@ __device__ float hit_bbox(const bvh_node& node, const ray& r, float t_max) {
     return t_min;
 }
 
-void releaseScene(scene& sc) {
+void releaseScene(int *d_colors) {
     // destroy texture object
     checkCudaErrors(cudaUnbindTexture(t_bvh));
     checkCudaErrors(cudaUnbindTexture(t_spheres));
     checkCudaErrors(cudaFree(d_bvh_buf));
     checkCudaErrors(cudaFree(d_spheres_buf));
-    checkCudaErrors(cudaFree(sc.colors));
+    checkCudaErrors(cudaFree(d_colors));
 }
