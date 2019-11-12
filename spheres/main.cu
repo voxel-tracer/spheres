@@ -1,5 +1,6 @@
 #include <float.h>
 #include <cuda_profiler_api.h>
+#include <cuda_runtime.h>
 
 #include "ray.h"
 #include "camera.h"
@@ -11,6 +12,21 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
+using namespace std;
+
+// limited version of checkCudaErrors from helper_cuda.h in CUDA examples
+#define checkCudaErrors(val) check_cuda( (val), #val, __FILE__, __LINE__ )
+
+void check_cuda(cudaError_t result, char const* const func, const char* const file, int const line) {
+    if (result) {
+        cerr << "CUDA error = " << cudaGetErrorString(result) << " at " <<
+            file << ":" << line << " '" << func << "' \n";
+        // Make sure we call CUDA Device Reset before exiting
+        cudaDeviceReset();
+        exit(99);
+    }
+}
+
 #define DYNAMIC_FETCH_THRESHOLD 20          // If fewer than this active, fetch new rays
 
 const int MaxBlockWidth = 32;
@@ -18,6 +34,14 @@ const int MaxBlockHeight = 2; // block width is 32
 const int kMaxBounces = 10;
 
 typedef unsigned long long ull;
+
+__device__ __constant__ float d_colormap[256 * 3];
+__device__ __constant__ bvh_node d_nodes[2048];
+
+texture<float4> t_bvh;
+texture<float> t_spheres;
+float* d_bvh_buf;
+float* d_spheres_buf;
 
 struct render_params {
     vec3* fb;
@@ -949,6 +973,61 @@ __global__ void print_metrics(metrics m, unsigned int iteration, unsigned int ma
     m.print(iteration, elapsedSeconds, last);
 }
 
+void copySceneToDevice(const scene& sc, int** d_colors) {
+    // copy the first 2048 nodes to constant memory
+    const int const_size = min(2048, sc.bvh_size);
+    checkCudaErrors(cudaMemcpyToSymbol(d_nodes, sc.bvh, const_size * sizeof(bvh_node)));
+
+    // copy remaining nodes to global memory
+    int remaining = sc.bvh_size - const_size;
+    if (remaining > 0) {
+        // declare and allocate memory
+        const int buf_size_bytes = remaining * 6 * sizeof(float);
+        checkCudaErrors(cudaMalloc(&d_bvh_buf, buf_size_bytes));
+        checkCudaErrors(cudaMemcpy(d_bvh_buf, (void*)(sc.bvh + const_size), buf_size_bytes, cudaMemcpyHostToDevice));
+        checkCudaErrors(cudaBindTexture(NULL, t_bvh, (void*)d_bvh_buf, buf_size_bytes));
+    }
+
+    // copying spheres to texture memory
+    const int spheres_size_float = lane_size_float * (sc.spheres_size / lane_size_spheres);
+
+    // copy the spheres in array of floats
+    // do it after we build the BVH as it would have moved the spheres around
+    float* floats = new float[spheres_size_float];
+    int* colors = new int[sc.spheres_size];
+    int idx = 0;
+    int i = 0;
+    while (i < sc.spheres_size) {
+        for (int j = 0; j < lane_size_spheres; j++, i++) {
+            floats[idx++] = sc.spheres[i].center.x();
+            floats[idx++] = sc.spheres[i].center.y();
+            floats[idx++] = sc.spheres[i].center.z();
+            colors[i] = sc.spheres[i].color;
+        }
+        idx += lane_padding_float; // padding
+    }
+    assert(idx == scene_size_float);
+
+    checkCudaErrors(cudaMalloc((void**)d_colors, sc.spheres_size * sizeof(int)));
+    checkCudaErrors(cudaMemcpy(*d_colors, colors, sc.spheres_size * sizeof(int), cudaMemcpyHostToDevice));
+
+    checkCudaErrors(cudaMalloc((void**)& d_spheres_buf, spheres_size_float * sizeof(float)));
+    checkCudaErrors(cudaMemcpy(d_spheres_buf, floats, spheres_size_float * sizeof(float), cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaBindTexture(NULL, t_spheres, (void*)d_spheres_buf, spheres_size_float * sizeof(float)));
+
+    delete[] floats;
+    delete[] colors;
+}
+
+void releaseScene(int* d_colors) {
+    // destroy texture object
+    checkCudaErrors(cudaUnbindTexture(t_bvh));
+    checkCudaErrors(cudaUnbindTexture(t_spheres));
+    checkCudaErrors(cudaFree(d_bvh_buf));
+    checkCudaErrors(cudaFree(d_spheres_buf));
+    checkCudaErrors(cudaFree(d_colors));
+}
+
 camera setup_camera(int nx, int ny, float dist) {
     vec3 lookfrom(dist, dist, dist);
     vec3 lookat(0, 0, 0);
@@ -1016,26 +1095,38 @@ int main(int argc, char** argv) {
     // load colormap
     vector<vector<float>> data = parse2DCsvFile(opt.colormap);
     std::cout << "colormap contains " << data.size() << " points\n";
-    float *_viridis_data = new float[data.size() * 3];
+    float *colormap = new float[data.size() * 3];
     int idx = 0;
     for (auto l : data) {
-        _viridis_data[idx++] = (float)l[0];
-        _viridis_data[idx++] = (float)l[1];
-        _viridis_data[idx++] = (float)l[2];
+        colormap[idx++] = (float)l[0];
+        colormap[idx++] = (float)l[1];
+        colormap[idx++] = (float)l[2];
     }
+
+    // copy colors to constant memory
+    checkCudaErrors(cudaMemcpyToSymbol(d_colormap, colormap, 256 * 3 * sizeof(float)));
+    delete[] colormap;
+    colormap = NULL;
+
     // setup scene
-    int num_nodes;
     int* d_colors;
-    setup_scene(opt.input, is_csv, _viridis_data, &d_colors, num_nodes);
-    delete[] _viridis_data;
-    _viridis_data = NULL;
+    scene sc;
+    if (is_csv) {
+        load_from_csv(opt.input, sc);
+        store_to_binary(strcat(opt.input, ".bin"), sc);
+    }
+    else {
+        load_from_binary(opt.input, sc);
+    }
+    copySceneToDevice(sc, &d_colors);
+    sc.release();
 
     camera cam = setup_camera(opt.nx, opt.ny, opt.dist);
     vec3* h_fb = new vec3[fb_size];
 
     render_params params;
     params.fb = d_fb;
-    params.leaf_offset = num_nodes / 2;
+    params.leaf_offset = sc.bvh_size / 2;
     params.colors = d_colors;
     params.width = opt.nx;
     params.height = opt.ny;

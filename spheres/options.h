@@ -46,7 +46,7 @@ void parse_args(int argc, char** argv, options& opt) {
         else if (!strcmp(arg, "-v"))
             opt.verbose = true;
         else if (!strcmp(arg, "-h")) {
-            std::cout << "usage: spheres -i <input file> [-w width 1200] [-h height 1200] [-ns spp 10] [-d camera dist 100] [-mp max active paths 1M] [-b numBouncesPerIter 4] [-c colormap viridis.csv] [-v verbose false]" << endl;
+            std::cout << "usage: spheres -i <input file> [-w width 1200] [-h height 1200] [-ns spp 10] [-d camera dist 100] [-mp max active paths 1M] [-b numBouncesPerIter 4] [-c colormap viridis.csv] [-v verbose false]" << std::endl;
             exit(-1);
         }
         else {

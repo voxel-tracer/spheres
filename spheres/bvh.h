@@ -1,5 +1,8 @@
 #pragma once
 
+//#undef NDEBUG
+#include <cassert>
+
 /**
 non-leaf nodes represent bounding box of all spheres that are inside it
 leaf nodes represent 2 spheres
