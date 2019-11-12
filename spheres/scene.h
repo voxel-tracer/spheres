@@ -5,17 +5,14 @@
 #include "vec3.h"
 #include "sphere.h"
 
-#include <vector>
-#include <sstream>
-#include <iostream>
-#include <fstream>
-#include <string>
 #include <time.h>
 
 //#undef NDEBUG
 #include <cassert>
 
 #include "constants.h"
+#include "bvh.h"
+#include "utils.h"
 
 using namespace std;
 
@@ -32,76 +29,6 @@ void check_cuda(cudaError_t result, char const *const func, const char *const fi
     }
 }
 
-/**
-* Reads csv file into table, exported as a vector of vector of doubles.
-* @param inputFileName input file name (full path).
-* @return data as vector of vector of doubles.
-*
-* code adapted from https://waterprogramming.wordpress.com/2017/08/20/reading-csv-files-in-c/
-*/
-vector<vector<float>> parse2DCsvFile(string inputFileName) {
-
-    vector<vector<float> > data;
-    ifstream inputFile(inputFileName);
-    int l = 0;
-
-    while (inputFile) {
-        l++;
-        string s;
-        if (!getline(inputFile, s)) break;
-        if (s[0] != '#') {
-            istringstream ss(s);
-            vector<float> record;
-
-            while (ss) {
-                string line;
-                if (!getline(ss, line, ','))
-                    break;
-                try {
-                    record.push_back(stof(line));
-                }
-                catch (const std::invalid_argument e) {
-                    cout << "NaN found in file " << inputFileName << " line " << l
-                        << endl;
-                    e.what();
-                }
-            }
-
-            data.push_back(record);
-        }
-    }
-
-    if (!inputFile.eof()) {
-        cerr << "Could not read file " << inputFileName << "\n";
-        exit(99);
-    }
-
-    return data;
-}
-
-/**
-non-leaf nodes represent bounding box of all spheres that are inside it
-leaf nodes represent 2 spheres
-*/
-struct bvh_node {
-    __host__ __device__ bvh_node() {}
-    bvh_node(const vec3& A, const vec3& B) :a(A), b(B) {}
-    __device__ bvh_node(float x0, float y0, float z0, float x1, float y1, float z1) : a(x0, y0, z0), b(x1, y1, z1) {}
-
-    __device__ vec3 min() const { return a; }
-    __device__ vec3 max() const { return b; }
-
-    unsigned int split_axis() const { return max_component(b - a); }
-
-    vec3 a;
-    vec3 b;
-};
-
-ostream& operator << (ostream& out, const bvh_node& node) {
-    out << "{" << node.a << ", " << node.b << "}";
-    return out;
-}
-
 // step 1: allocate memory for the constant part
 __device__ __constant__ bvh_node d_nodes[2048];
 __device__ __constant__ float d_colormap[256 * 3];
@@ -111,221 +38,124 @@ texture<float> t_spheres;
 float* d_bvh_buf;
 float* d_spheres_buf;
 
-int box_x_compare(const void* a, const void* b) {
-    float xa = ((sphere*)a)->center.x();
-    float xb = ((sphere*)b)->center.x();
+struct scene {
+    sphere* spheres;
+    int spheres_size;
 
-    if (xa < xb) return -1;
-    else if (xb < xa) return 1;
-    return 0;
-}
+    bvh_node* bvh;
+    int bvh_size;
+};
 
-int box_y_compare(const void* a, const void* b) {
-    float ya = ((sphere*)a)->center.y();
-    float yb = ((sphere*)b)->center.y();
-
-    if (ya < yb) return -1;
-    else if (yb < ya) return 1;
-    return 0;
-}
-
-int box_z_compare(const void* a, const void* b) {
-    float za = ((sphere*)a)->center.z();
-    float zb = ((sphere*)b)->center.z();
-
-    if (za < zb) return -1;
-    else if (zb < za) return 1;
-    return 0;
-}
-
-vec3 minof(const sphere *l, int n) {
-    vec3 min = l[0].center;
-    for (int i = 1; i < n; i++) {
-        for (int a = 0; a < 3; a++)
-            min[a] = fminf(min[a], l[i].center[a]);
-    }
-    return min;
-}
-
-vec3 maxof(const sphere *l, int n) {
-    vec3 max = l[0].center;
-    for (int i = 1; i < n; i++) {
-        for (int a = 0; a < 3; a++)
-            max[a] = fmaxf(max[a], l[i].center[a]);
-    }
-    return max;
-}
-
-void build_bvh(bvh_node *nodes, int idx, sphere *l, int n) {
-    assert(n >= lane_size_spheres);
-    nodes[idx] = bvh_node(minof(l, n), maxof(l, n));
-
-    if (n > lane_size_spheres) {
-        const unsigned int axis = nodes[idx].split_axis();
-        if (axis == 0)
-            qsort(l, n, sizeof(sphere), box_x_compare);
-        else if (axis == 1)
-            qsort(l, n, sizeof(sphere), box_y_compare);
-        else
-            qsort(l, n, sizeof(sphere), box_z_compare);
-
-        build_bvh(nodes, idx * 2, l, n / 2);
-        build_bvh(nodes, idx * 2 + 1, l + n / 2, n / 2);
-    }
-}
-
-bvh_node* build_bvh(sphere *l, int n, int &count) {
-    cout << " building BVH...";
-    clock_t start, stop;
-    start = clock();
-
-    count = n / lane_size_spheres;
-    cout << " of size " << 2 * count << endl;
-    bvh_node* nodes = new bvh_node[2 * count];
-    build_bvh(nodes, 1, l, n);
-
-    stop = clock();
-    cout << "done in " << ((double)(stop - start)) / CLOCKS_PER_SEC << "s" << endl;
-
-    return nodes;
-}
-
-void store_to_binary(const char *output, const bvh_node *nodes, const sphere *spheres, int num_spheres, int num_nodes) {
-    cout << "Saving scene to binary file" << endl;
+void store_to_binary(const char *output, const scene& sc) {
     fstream out(output, ios::out | ios::binary);
-    out.write((char*)&num_spheres, sizeof(num_spheres));
-    out.write((char*)spheres, sizeof(sphere)*num_spheres);
-    out.write((char*)&num_nodes, sizeof(num_nodes));
-    out.write((char*)nodes, sizeof(bvh_node)*num_nodes);
+    out.write((char*)& sc.spheres_size, sizeof(int));
+    out.write((char*)sc.spheres, sizeof(sphere) * sc.spheres_size);
+    out.write((char*)& sc.bvh_size, sizeof(int));
+    out.write((char*)sc.bvh, sizeof(bvh_node) * sc.bvh_size);
     out.close();
 }
 
-void load_from_binary(const char *input, sphere **spheres, bvh_node **nodes, int &num_spheres, int &num_nodes) {
-    cout << "Loading scene from disk";
+void load_from_binary(const char *input, scene& sc) {
     fstream in(input, ios::in | ios::binary);
-    in.read((char*)&num_spheres, sizeof(num_spheres));
-    *spheres = new sphere[num_spheres];
-    in.read((char*)(*spheres), sizeof(sphere)*num_spheres);
+    in.read((char*)& sc.spheres_size, sizeof(int));
+    sc.spheres = new sphere[sc.spheres_size];
+    in.read((char*)sc.spheres, sizeof(sphere) * sc.spheres_size);
 
-    in.read((char*)&num_nodes, sizeof(num_nodes));
-    *nodes = new bvh_node[num_nodes];
-    in.read((char*)(*nodes), sizeof(bvh_node)*num_nodes);
-    cout << ", loaded " << num_spheres << " spheres, and " << num_nodes << " bvh nodes" << endl;
+    in.read((char*)& sc.bvh_size, sizeof(int));
+    sc.bvh = new bvh_node[sc.bvh_size];
+    in.read((char*)sc.bvh, sizeof(bvh_node) * sc.bvh_size);
 }
 
-void load_from_csv(const char *input, sphere **spheres, bvh_node **nodes, int &num_spheres, int &num_nodes) {
-    cout << "Loading spheres from disk";
+void load_from_csv(const char *input, scene& sc) {
     vector<vector<float>> data = parse2DCsvFile(input);
     // make sure we only load N such that (N/lane_size_spheres) is a multiple of 2
     int size = data.size();
     size /= 10;
-    num_spheres = powf(2, (int)(log2f((float)size))) * 10;
-    cout << ", loaded " << num_spheres << " spheres" << endl;
-    *spheres = new sphere[num_spheres];
+    sc.spheres_size = powf(2, (int)(log2f((float)size))) * 10;
+    sc.spheres = new sphere[sc.spheres_size];
+
     int max_gen = 0;
     int i = 0;
     for (auto l : data) {
         int parent = (int)l[1];
-        int gen = 1 + (parent > 0 ? (*spheres)[parent - 1].color : 0);
+        int gen = 1 + (parent > 0 ? sc.spheres[parent - 1].color : 0);
         max_gen = max(gen, max_gen);
-        (*spheres)[i++] = sphere(vec3(l[2], l[3], l[4]), gen);
-        if (i == num_spheres)
+        sc.spheres[i++] = sphere(vec3(l[2], l[3], l[4]), gen);
+        if (i == sc.spheres_size)
             break;
     }
 
     // normalize color idx such that max_gen = 256
     float normalizer = 255.0f / max_gen;
-    for (int i = 0; i < num_spheres; i++) {
-        int gen = (*spheres)[i].color;
-        (*spheres)[i].color = (int) (gen * normalizer);
+    for (int i = 0; i < sc.spheres_size; i++) {
+        int gen = sc.spheres[i].color;
+        sc.spheres[i].color = (int) (gen * normalizer);
     }
 
-    int half_num_nodes;
-    *nodes = build_bvh(*spheres, num_spheres, half_num_nodes);
-    num_nodes = half_num_nodes * 2;
+    sc.bvh = build_bvh(sc.spheres, sc.spheres_size, sc.bvh_size);
 }
 
-void setup_scene(char *input, bool csv, float *colormap, int **d_colors, int& num_nodes) {
-    int num_spheres;
-    bvh_node *nodes;
-    sphere *spheres;
+void setup_scene(char *input, bool csv, float *colormap, int **d_colors, int& bvh_size) {
+    scene sc;
 
     if (csv) {
-        load_from_csv(input, &spheres, &nodes, num_spheres, num_nodes);
-        store_to_binary(strcat(input, ".bin"), nodes, spheres, num_spheres, num_nodes);
+        load_from_csv(input, sc);
+        store_to_binary(strcat(input, ".bin"), sc);
     }
     else {
-        load_from_binary(input, &spheres, &nodes, num_spheres, num_nodes);
+        load_from_binary(input, sc);
     }
 
+    bvh_size = sc.bvh_size;
+
     // once we build the tree, copy the first 2048 nodes to constant memory
-    const int const_size = min(2048, num_nodes);
-    checkCudaErrors(cudaMemcpyToSymbol(d_nodes, nodes, const_size * sizeof(bvh_node)));
-    cout << "copied " << const_size << " nodes to constant memory." << endl;
+    const int const_size = min(2048, sc.bvh_size);
+    checkCudaErrors(cudaMemcpyToSymbol(d_nodes, sc.bvh, const_size * sizeof(bvh_node)));
 
     // copy colors to constant memory
     checkCudaErrors(cudaMemcpyToSymbol(d_colormap, colormap, 256 * 3 * sizeof(float)));
 
     // copy remaining nodes to global memory
-    int bvh_size = num_nodes - const_size;
-    if (bvh_size > 0) {
+    int remaining = sc.bvh_size - const_size;
+    if (remaining > 0) {
         // declare and allocate memory
-        const int buf_size_bytes = bvh_size * 6 * sizeof(float);
+        const int buf_size_bytes = remaining * 6 * sizeof(float);
         checkCudaErrors(cudaMalloc(&d_bvh_buf, buf_size_bytes));
-        checkCudaErrors(cudaMemcpy(d_bvh_buf, (void*)(nodes + const_size), buf_size_bytes, cudaMemcpyHostToDevice));
+        checkCudaErrors(cudaMemcpy(d_bvh_buf, (void*)(sc.bvh + const_size), buf_size_bytes, cudaMemcpyHostToDevice));
         checkCudaErrors(cudaBindTexture(NULL, t_bvh, (void*)d_bvh_buf, buf_size_bytes));
-        cout << "created texture memory" << endl;
     }
 
     // copying spheres to texture memory
-    const int spheres_size_float = lane_size_float * (num_spheres / lane_size_spheres);
+    const int spheres_size_float = lane_size_float * (sc.spheres_size / lane_size_spheres);
 
     // copy the spheres in array of floats
     // do it after we build the BVH as it would have moved the spheres around
     float *floats = new float[spheres_size_float];
-    int *colors = new int[num_spheres];
+    int *colors = new int[sc.spheres_size];
     int idx = 0;
     int i = 0;
-    while (i < num_spheres) {
+    while (i < sc.spheres_size) {
         for (int j = 0; j < lane_size_spheres; j++, i++) {
-            floats[idx++] = spheres[i].center.x();
-            floats[idx++] = spheres[i].center.y();
-            floats[idx++] = spheres[i].center.z();
-            colors[i] = spheres[i].color;
+            floats[idx++] = sc.spheres[i].center.x();
+            floats[idx++] = sc.spheres[i].center.y();
+            floats[idx++] = sc.spheres[i].center.z();
+            colors[i] = sc.spheres[i].color;
         }
         idx += lane_padding_float; // padding
     }
     assert(idx == scene_size_float);
 
-    checkCudaErrors(cudaMalloc((void **) d_colors, num_spheres * sizeof(int)));
-    checkCudaErrors(cudaMemcpy(*d_colors, colors, num_spheres * sizeof(int), cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMalloc((void **) d_colors, sc.spheres_size * sizeof(int)));
+    checkCudaErrors(cudaMemcpy(*d_colors, colors, sc.spheres_size * sizeof(int), cudaMemcpyHostToDevice));
 
     checkCudaErrors(cudaMalloc((void**)& d_spheres_buf, spheres_size_float * sizeof(float)));
     checkCudaErrors(cudaMemcpy(d_spheres_buf, floats, spheres_size_float * sizeof(float), cudaMemcpyHostToDevice));
     checkCudaErrors(cudaBindTexture(NULL, t_spheres, (void*)d_spheres_buf, spheres_size_float * sizeof(float)));
 
-    delete[] nodes;
+    delete[] sc.bvh;
     delete[] floats;
-    delete[] spheres;
+    delete[] sc.spheres;
     delete[] colors;
-}
-
-__device__ float hit_bbox(const bvh_node& node, const ray& r, float t_max) {
-    float t_min = 0.001f;
-    for (int a = 0; a < 3; a++) {
-        float invD = 1.0f / r.direction()[a];
-        float t0 = (node.min()[a] - 1 - r.origin()[a]) * invD;
-        float t1 = (node.max()[a] + 1 - r.origin()[a]) * invD;
-        if (invD < 0.0f) {
-            float tmp = t0; t0 = t1; t1 = tmp;
-        }
-        t_min = t0 > t_min ? t0 : t_min;
-        t_max = t1 < t_max ? t1 : t_max;
-        if (t_max <= t_min)
-            return FLT_MAX;
-    }
-
-    return t_min;
 }
 
 void releaseScene(int *d_colors) {
