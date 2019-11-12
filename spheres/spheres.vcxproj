@@ -90,6 +90,7 @@
     <ClInclude Include="bvh.h" />
     <ClInclude Include="camera.h" />
     <ClInclude Include="constants.h" />
+    <ClInclude Include="metrics.h" />
     <ClInclude Include="options.h" />
     <ClInclude Include="ray.h" />
     <ClInclude Include="rnd.h" />
