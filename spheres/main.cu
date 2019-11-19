@@ -52,7 +52,6 @@ struct render_params {
     unsigned int height;
     unsigned int spp;
     unsigned int maxActivePaths;
-    ull samples_count;
 
     int* colors;
 };
@@ -169,7 +168,8 @@ __global__ void fetch_samples(const render_params params, paths p, bool first, c
 
         // compute sample this lane is going to fetch
         const ull sample_id = nextSample + idxTerminated;
-        if (sample_id >= params.samples_count)
+        const ull max_samples = (ull)params.width * (ull)params.height * (ull)params.spp;
+        if (sample_id >= max_samples)
             return; // no more samples to fetch
 
         // retrieve pixel_id corresponding to current path
@@ -705,27 +705,19 @@ int cmpfunc(const void * a, const void * b) {
         return 0;
 }
 
-int main(int argc, char** argv) {
-    options opt;
-    parse_args(argc, argv, opt);
+vec3* d_fb;
+int* d_colors;
 
-    const bool is_csv = strncmp(opt.input + strlen(opt.input) - 4, ".csv", 4) == 0;
-    
-    cerr << "Rendering a " << opt.nx << "x" << opt.ny << " image with " << opt.ns << " samples per pixel, maxActivePaths = " << opt.maxActivePaths << ", numBouncesPerIter = " << opt.numBouncesPerIter << "\n";
-
+void initCuda(const options opt) {
     int num_pixels = opt.nx * opt.ny;
     size_t fb_size = num_pixels * sizeof(vec3);
-
-    // allocate FB
-    vec3 *d_fb;
-    checkCudaErrors(cudaMalloc((void **)&d_fb, fb_size));
+    checkCudaErrors(cudaMalloc((void**)&d_fb, fb_size));
     checkCudaErrors(cudaMemset(d_fb, 0, fb_size));
+}
 
-
-    // load colormap
-    vector<vector<float>> data = parse2DCsvFile(opt.colormap);
-    std::cout << "colormap contains " << data.size() << " points\n";
-    float *colormap = new float[data.size() * 3];
+void loadColormap(const char* filename) {
+    vector<vector<float>> data = parse2DCsvFile(filename);
+    float* colormap = new float[data.size() * 3];
     int idx = 0;
     for (auto l : data) {
         colormap[idx++] = (float)l[0];
@@ -736,12 +728,26 @@ int main(int argc, char** argv) {
     // copy colors to constant memory
     checkCudaErrors(cudaMemcpyToSymbol(d_colormap, colormap, 256 * 3 * sizeof(float)));
     delete[] colormap;
-    colormap = NULL;
+}
 
-    // setup scene
-    int* d_colors;
+void saveImage(const options opt, const char* filename) {
+    int num_pixels = opt.nx * opt.ny;
+    size_t fb_size = num_pixels * sizeof(vec3);
+    vec3* h_fb = new vec3[fb_size];
+    checkCudaErrors(cudaMemcpy(h_fb, d_fb, fb_size, cudaMemcpyDeviceToHost));
+    write_image(filename, h_fb, opt.nx, opt.ny, opt.ns);
+    delete[] h_fb;
+}
+
+void printRenderParams(const options opt) {
+    cout << "Rendering a " << opt.nx << "x" << opt.ny << " image with " 
+         << opt.ns << " samples per pixel, maxActivePaths = " << opt.maxActivePaths 
+         << ", numBouncesPerIter = " << opt.numBouncesPerIter << "\n";
+}
+
+int loadScene(const options opt) {
     scene sc;
-    if (is_csv) {
+    if (!opt.binary) {
         load_from_csv(opt.input, sc);
         store_to_binary(strcat(opt.input, ".bin"), sc);
     }
@@ -751,20 +757,36 @@ int main(int argc, char** argv) {
     copySceneToDevice(sc, &d_colors);
     sc.release();
 
-    camera cam = setup_camera(opt.nx, opt.ny, opt.dist);
-    vec3* h_fb = new vec3[fb_size];
+    return sc.bvh_size;
+}
 
+render_params setupRenderParams(options opt, int bvh_size) {
     render_params params;
     params.fb = d_fb;
-    params.leaf_offset = sc.bvh_size / 2;
+    params.leaf_offset = bvh_size / 2;
     params.colors = d_colors;
     params.width = opt.nx;
     params.height = opt.ny;
     params.spp = opt.ns;
     params.maxActivePaths = opt.maxActivePaths;
-    params.samples_count = opt.nx;
-    params.samples_count *= opt.ny;
-    params.samples_count *= opt.ns;
+    return params;
+}
+
+int main(int argc, char** argv) {
+    options opt;
+    if (!parse_args(argc, argv, opt))
+        return -1;
+    
+    printRenderParams(opt);
+
+    initCuda(opt);
+    loadColormap(opt.colormap);
+
+    const int bvh_size = loadScene(opt);
+
+    camera cam = setup_camera(opt.nx, opt.ny, opt.dist);
+
+    render_params params = setupRenderParams(opt, bvh_size);
 
     paths p;
     setup_paths(p, opt.nx, opt.ny, opt.ns, opt.maxActivePaths);
@@ -841,15 +863,12 @@ int main(int argc, char** argv) {
     checkCudaErrors(cudaGetLastError());
 
     checkCudaErrors(cudaDeviceSynchronize());
-    cerr << "\rrendered " << params.samples_count << " samples in " << (float)(clock() - start) / CLOCKS_PER_SEC << " seconds.                                    \n";
+    const ull max_samples = (ull)opt.nx * (ull)opt.ny * (ull)opt.ns;
+    cerr << "\rrendered " << max_samples << " samples in " << (float)(clock() - start) / CLOCKS_PER_SEC << " seconds.                                    \n";
 
-    // Output FB as Image
-    checkCudaErrors(cudaMemcpy(h_fb, d_fb, fb_size, cudaMemcpyDeviceToHost));
-    char file_name[100];
-    sprintf(file_name, "%s_%dx%dx%d_%d_bvh.png", opt.input, opt.nx, opt.ny, opt.ns, opt.dist);
-    write_image(file_name, h_fb, opt.nx, opt.ny, opt.ns);
-    delete[] h_fb;
-    h_fb = NULL;
+    char imagename[100];
+    sprintf(imagename, "%s_%dx%dx%d_%d_bvh.png", opt.input, opt.nx, opt.ny, opt.ns, opt.dist);
+    saveImage(opt, imagename);
 
     // clean up
     free_paths(p);
