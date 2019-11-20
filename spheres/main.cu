@@ -780,69 +780,84 @@ render_params setupRenderParams(options opt, int bvh_size) {
     return params;
 }
 
+bool renderIteration(const options& opt, const render_params& params, const paths& p, const camera& cam, unsigned int iteration) {
+
+    // init kMaxActivePaths using equal number of threads
+    {
+        const int threads = 32; // 1 warp per block
+        const int blocks = (opt.maxActivePaths + threads - 1) / threads;
+        fetch_samples <<< blocks, threads >>> (params, p, iteration == 0, cam);
+        checkCudaErrors(cudaGetLastError());
+    }
+
+    // check if not all paths terminated
+    // we don't want to check the metric after each bounce, we do it every numBouncesPerIter iterations
+    if (iteration > 0 && (iteration % opt.numBouncesPerIter) == 0) {
+        unsigned int num_active_paths;
+        checkCudaErrors(cudaMemcpy((void*)&num_active_paths, (void*)p.m.num_active_paths, sizeof(unsigned int), cudaMemcpyDeviceToHost));
+        if (num_active_paths < (opt.maxActivePaths * 0.05f)) {
+            return false;
+        }
+    }
+
+    // traverse bvh
+    {
+        dim3 blocks(6400 * 2, 1);
+        dim3 threads(MaxBlockWidth, MaxBlockHeight);
+        trace_scattered <<< blocks, threads >>> (params, p);
+        checkCudaErrors(cudaGetLastError());
+    }
+
+    // generate shadow rays
+    {
+        const int threads = 128;
+        const int blocks = (opt.maxActivePaths + threads - 1) / threads;
+        generate_shadow_raws <<< blocks, threads >>> (params, p);
+        checkCudaErrors(cudaGetLastError());
+    }
+
+    // trace shadow rays
+    {
+        dim3 blocks(6400 * 2, 1);
+        dim3 threads(MaxBlockWidth, MaxBlockHeight);
+        trace_shadows <<< blocks, threads >>> (params, p);
+        checkCudaErrors(cudaGetLastError());
+    }
+
+    // update paths accounting for intersection and light contribution
+    {
+        const int threads = 128;
+        const int blocks = (opt.maxActivePaths + threads - 1) / threads;
+        update <<< blocks, threads >>> (params, p);
+        checkCudaErrors(cudaGetLastError());
+    }
+
+    return true;
+}
+
 void render(const options& opt, const render_params& params, const paths& p, const camera& cam) {
     clock_t start = clock();
     cudaProfilerStart();
 
     unsigned int iteration = 0;
     while (true) {
-
-        // init kMaxActivePaths using equal number of threads
-        {
-            const int threads = 32; // 1 warp per block
-            const int blocks = (opt.maxActivePaths + threads - 1) / threads;
-            fetch_samples <<< blocks, threads >>> (params, p, iteration == 0, cam);
-            checkCudaErrors(cudaGetLastError());
+        if (!renderIteration(opt, params, p, cam, iteration)) {
+            break;
         }
 
-        // check if not all paths terminated
-        // we don't want to check the metric after each bounce, we do it every numBouncesPerIter iterations
-        if (iteration > 0 && (iteration % opt.numBouncesPerIter) == 0) {
-            unsigned int num_active_paths;
-            checkCudaErrors(cudaMemcpy((void*)&num_active_paths, (void*)p.m.num_active_paths, sizeof(unsigned int), cudaMemcpyDeviceToHost));
-            if (num_active_paths < (opt.maxActivePaths * 0.05f)) {
-                break;
-            }
-        }
-
-        // traverse bvh
-        {
-            dim3 blocks(6400 * 2, 1);
-            dim3 threads(MaxBlockWidth, MaxBlockHeight);
-            trace_scattered <<< blocks, threads >>> (params, p);
-            checkCudaErrors(cudaGetLastError());
-        }
-
-        // generate shadow rays
         {
             const int threads = 128;
-            const int blocks = (opt.maxActivePaths + threads - 1) / threads;
-            generate_shadow_raws <<< blocks, threads >>> (params, p);
-            checkCudaErrors(cudaGetLastError());
+            const int blocks = (params.width * params.height + threads - 1) / threads;
+            copyToUintBuffer <<< blocks, threads >>> (params, d_cuda_render_buffer);
         }
 
-        // trace shadow rays
-        {
-            dim3 blocks(6400 * 2, 1);
-            dim3 threads(MaxBlockWidth, MaxBlockHeight);
-            trace_shadows <<< blocks, threads >>> (params, p);
-            checkCudaErrors(cudaGetLastError());
-        }
-
-        // update paths accounting for intersection and light contribution
-        {
-            const int threads = 128;
-            const int blocks = (opt.maxActivePaths + threads - 1) / threads;
-            update <<< blocks, threads >>> (params, p);
-            checkCudaErrors(cudaGetLastError());
-        }
+        updateWindow();
 
         // print metrics
         if (opt.verbose) {
             print_metrics <<< 1, 1 >>> (p.m, iteration, opt.maxActivePaths, (float)(clock() - start) / CLOCKS_PER_SEC, false);
             checkCudaErrors(cudaGetLastError());
         }
-        //checkCudaErrors(cudaDeviceSynchronize());
 
         iteration++;
     }
@@ -854,12 +869,6 @@ void render(const options& opt, const render_params& params, const paths& p, con
     checkCudaErrors(cudaDeviceSynchronize());
     const ull max_samples = (ull)opt.nx * (ull)opt.ny * (ull)opt.ns;
     cerr << "\rrendered " << max_samples << " samples in " << (float)(clock() - start) / CLOCKS_PER_SEC << " seconds.                                    \n";
-
-    {
-        const int threads = 128;
-        const int blocks = (params.width * params.height + threads - 1) / threads;
-        copyToUintBuffer <<< blocks, threads >>> (params, d_cuda_render_buffer);
-    }
 }
 
 int main(int argc, char** argv) {
@@ -884,9 +893,8 @@ int main(int argc, char** argv) {
     setup_paths(p, opt.nx, opt.ny, opt.ns, opt.maxActivePaths);
 
     cout << "started renderer\n" << std::flush;
-    render(opt, params, p, cam);
 
-    updateWindow();
+    render(opt, params, p, cam);
 
     while (!pollWindowEvents());
 
