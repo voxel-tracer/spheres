@@ -840,18 +840,18 @@ void render(const options& opt, const render_params& params, const paths& p, con
     cudaProfilerStart();
 
     unsigned int iteration = 0;
-    while (true) {
+    while (!pollWindowEvents()) {
         if (!renderIteration(opt, params, p, cam, iteration)) {
             break;
         }
 
-        {
+        if (opt.window) {
             const int threads = 128;
             const int blocks = (params.width * params.height + threads - 1) / threads;
             copyToUintBuffer <<< blocks, threads >>> (params, d_cuda_render_buffer);
-        }
 
-        updateWindow();
+            updateWindow();
+        }
 
         // print metrics
         if (opt.verbose) {
@@ -878,7 +878,9 @@ int main(int argc, char** argv) {
     
     printRenderParams(opt);
 
-    initWindow(argc, argv, opt.nx, opt.ny, &d_cuda_render_buffer);
+    if (opt.window) {
+        initWindow(argc, argv, opt.nx, opt.ny, &d_cuda_render_buffer);
+    }
 
     initCuda(opt);
     loadColormap(opt.colormap);
@@ -896,14 +898,16 @@ int main(int argc, char** argv) {
 
     render(opt, params, p, cam);
 
-    while (!pollWindowEvents());
+    while (opt.window && !pollWindowEvents());
 
     char imagename[100];
     sprintf(imagename, "%s_%dx%dx%d_%d_bvh.png", opt.input, opt.nx, opt.ny, opt.ns, opt.dist);
     saveImage(opt, imagename);
 
     // clean up
-    destroyWindow();
+    if (opt.window) {
+        destroyWindow();
+    }
 
     free_paths(p);
     releaseScene(d_colors);
