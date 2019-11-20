@@ -1,0 +1,56 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CudaCompile Include="main.cu" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="bvh.h" />
+    <ClInclude Include="camera.h" />
+    <ClInclude Include="constants.h" />
+    <ClInclude Include="metrics.h" />
+    <ClInclude Include="options.h" />
+    <ClInclude Include="ray.h" />
+    <ClInclude Include="rnd.h" />
+    <ClInclude Include="scene.h" />
+    <ClInclude Include="sphere.h" />
+    <ClInclude Include="stb_image_write.h" />
+    <ClInclude Include="utils.h" />
+    <ClInclude Include="vec3.h" />
+    <ClInclude Include="shader_tools\GLSLProgram.h">
+      <Filter>shader_tools</Filter>
+    </ClInclude>
+    <ClInclude Include="shader_tools\GLSLShader.h">
+      <Filter>shader_tools</Filter>
+    </ClInclude>
+    <ClInclude Include="shader_tools\shader_tools_common.h">
+      <Filter>shader_tools</Filter>
+    </ClInclude>
+    <ClInclude Include="cudautils.h" />
+    <ClInclude Include="libs\helper_cuda.h">
+      <Filter>cuda</Filter>
+    </ClInclude>
+    <ClInclude Include="libs\helper_cuda_gl.h">
+      <Filter>cuda</Filter>
+    </ClInclude>
+    <ClInclude Include="libs\helper_string.h">
+      <Filter>cuda</Filter>
+    </ClInclude>
+    <ClInclude Include="glwindow.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="shader_tools">
+      <UniqueIdentifier>{72be4fa7-fe32-4c5e-a6d8-5ad543fb1e02}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="cuda">
+      <UniqueIdentifier>{3ba29dc2-4457-4ea7-891f-62c56f3eb2ed}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="shader_tools\GLSLProgram.cpp">
+      <Filter>shader_tools</Filter>
+    </ClCompile>
+    <ClCompile Include="shader_tools\GLSLShader.cpp">
+      <Filter>shader_tools</Filter>
+    </ClCompile>
+  </ItemGroup>
+</Project>

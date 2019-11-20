@@ -1,6 +1,7 @@
 #include <float.h>
 #include <cuda_profiler_api.h>
 #include <cuda_runtime.h>
+#include <time.h>
 
 #include "ray.h"
 #include "camera.h"
@@ -14,20 +15,10 @@
 
 using namespace std;
 
-// limited version of checkCudaErrors from helper_cuda.h in CUDA examples
-#define checkCudaErrors(val) check_cuda( (val), #val, __FILE__, __LINE__ )
-
-void check_cuda(cudaError_t result, char const* const func, const char* const file, int const line) {
-    if (result) {
-        cerr << "CUDA error = " << cudaGetErrorString(result) << " at " <<
-            file << ":" << line << " '" << func << "' \n";
-        // Make sure we call CUDA Device Reset before exiting
-        cudaDeviceReset();
-        exit(99);
-    }
-}
-
+#include "cudautils.h"
 #include "metrics.h"
+
+#include "glwindow.h"
 
 #define DYNAMIC_FETCH_THRESHOLD 20          // If fewer than this active, fetch new rays
 
@@ -44,6 +35,9 @@ texture<float4> t_bvh;
 texture<float> t_spheres;
 float* d_bvh_buf;
 float* d_spheres_buf;
+vec3* d_fb;
+int* d_colors;
+unsigned int* d_cuda_render_buffer;
 
 struct render_params {
     vec3* fb;
@@ -532,6 +526,32 @@ __global__ void trace_shadows(const render_params params, paths p) {
     }
 }
 
+// http://chilliant.blogspot.com.au/2012/08/srgb-approximations-for-hlsl.html
+__host__ __device__ uint32_t LinearToSRGB(float x)
+{
+    x = max(x, 0.0f);
+    x = max(1.055f * powf(x, 0.416666667f) - 0.055f, 0.0f);
+    uint32_t u = min((uint32_t)(x * 255.9f), 255u);
+    return u;
+}
+
+// convert floating point rgb color to 8-bit integer
+__device__ int rgbToInt(float r, float g, float b)
+{
+    r = LinearToSRGB(r);
+    g = LinearToSRGB(g);
+    b = LinearToSRGB(b);
+    return (int(b) << 16) | (int(g) << 8) | int(r);
+}
+
+__global__ void copyToUintBuffer(const render_params params, unsigned int* uint_render_buffer) {
+    const unsigned int pid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (pid >= (params.width * params.height))
+        return;
+    const vec3 pixel = params.fb[pid];
+    uint_render_buffer[pid] = rgbToInt(pixel.r() / params.spp, pixel.g() / params.spp, pixel.b() / params.spp);
+}
+
 // for all non terminated rays, accounts for shadow hit, compute scattered ray and resets the flag
 __global__ void update(const render_params params, paths p) {
     const float sky_emissive = .2f;
@@ -672,15 +692,6 @@ camera setup_camera(int nx, int ny, float dist) {
         dist_to_focus);
 }
 
-// http://chilliant.blogspot.com.au/2012/08/srgb-approximations-for-hlsl.html
-static uint32_t LinearToSRGB(float x)
-{
-    x = max(x, 0.0f);
-    x = max(1.055f * powf(x, 0.416666667f) - 0.055f, 0.0f);
-    uint32_t u = min((uint32_t)(x * 255.9f), 255u);
-    return u;
-}
-
 void write_image(const char* output_file, const vec3 *fb, const int nx, const int ny, const int ns) {
     char *data = new char[nx * ny * 3];
     int idx = 0;
@@ -704,9 +715,6 @@ int cmpfunc(const void * a, const void * b) {
     else
         return 0;
 }
-
-vec3* d_fb;
-int* d_colors;
 
 void initCuda(const options opt) {
     int num_pixels = opt.nx * opt.ny;
@@ -772,12 +780,96 @@ render_params setupRenderParams(options opt, int bvh_size) {
     return params;
 }
 
+void render(const options& opt, const render_params& params, const paths& p, const camera& cam) {
+    clock_t start = clock();
+    cudaProfilerStart();
+
+    unsigned int iteration = 0;
+    while (true) {
+
+        // init kMaxActivePaths using equal number of threads
+        {
+            const int threads = 32; // 1 warp per block
+            const int blocks = (opt.maxActivePaths + threads - 1) / threads;
+            fetch_samples <<< blocks, threads >>> (params, p, iteration == 0, cam);
+            checkCudaErrors(cudaGetLastError());
+        }
+
+        // check if not all paths terminated
+        // we don't want to check the metric after each bounce, we do it every numBouncesPerIter iterations
+        if (iteration > 0 && (iteration % opt.numBouncesPerIter) == 0) {
+            unsigned int num_active_paths;
+            checkCudaErrors(cudaMemcpy((void*)&num_active_paths, (void*)p.m.num_active_paths, sizeof(unsigned int), cudaMemcpyDeviceToHost));
+            if (num_active_paths < (opt.maxActivePaths * 0.05f)) {
+                break;
+            }
+        }
+
+        // traverse bvh
+        {
+            dim3 blocks(6400 * 2, 1);
+            dim3 threads(MaxBlockWidth, MaxBlockHeight);
+            trace_scattered <<< blocks, threads >>> (params, p);
+            checkCudaErrors(cudaGetLastError());
+        }
+
+        // generate shadow rays
+        {
+            const int threads = 128;
+            const int blocks = (opt.maxActivePaths + threads - 1) / threads;
+            generate_shadow_raws <<< blocks, threads >>> (params, p);
+            checkCudaErrors(cudaGetLastError());
+        }
+
+        // trace shadow rays
+        {
+            dim3 blocks(6400 * 2, 1);
+            dim3 threads(MaxBlockWidth, MaxBlockHeight);
+            trace_shadows <<< blocks, threads >>> (params, p);
+            checkCudaErrors(cudaGetLastError());
+        }
+
+        // update paths accounting for intersection and light contribution
+        {
+            const int threads = 128;
+            const int blocks = (opt.maxActivePaths + threads - 1) / threads;
+            update <<< blocks, threads >>> (params, p);
+            checkCudaErrors(cudaGetLastError());
+        }
+
+        // print metrics
+        if (opt.verbose) {
+            print_metrics <<< 1, 1 >>> (p.m, iteration, opt.maxActivePaths, (float)(clock() - start) / CLOCKS_PER_SEC, false);
+            checkCudaErrors(cudaGetLastError());
+        }
+        //checkCudaErrors(cudaDeviceSynchronize());
+
+        iteration++;
+    }
+    cudaProfilerStop();
+
+    print_metrics <<< 1, 1 >>> (p.m, iteration, opt.maxActivePaths, (float)(clock() - start) / CLOCKS_PER_SEC, true);
+    checkCudaErrors(cudaGetLastError());
+
+    checkCudaErrors(cudaDeviceSynchronize());
+    const ull max_samples = (ull)opt.nx * (ull)opt.ny * (ull)opt.ns;
+    cerr << "\rrendered " << max_samples << " samples in " << (float)(clock() - start) / CLOCKS_PER_SEC << " seconds.                                    \n";
+
+    {
+        const int threads = 128;
+        const int blocks = (params.width * params.height + threads - 1) / threads;
+        copyToUintBuffer <<< blocks, threads >>> (params, d_cuda_render_buffer);
+    }
+}
+
 int main(int argc, char** argv) {
     options opt;
     if (!parse_args(argc, argv, opt))
         return -1;
     
     printRenderParams(opt);
+
+    initWindow(argc, argv, opt.nx, opt.ny, &d_cuda_render_buffer);
 
     initCuda(opt);
     loadColormap(opt.colormap);
@@ -792,85 +884,19 @@ int main(int argc, char** argv) {
     setup_paths(p, opt.nx, opt.ny, opt.ns, opt.maxActivePaths);
 
     cout << "started renderer\n" << std::flush;
-    clock_t start = clock();
-    cudaProfilerStart();
+    render(opt, params, p, cam);
 
-    unsigned int iteration = 0;
-    while (true) {
+    updateWindow();
 
-        // init kMaxActivePaths using equal number of threads
-        {
-            const int threads = 32; // 1 warp per block
-            const int blocks = (opt.maxActivePaths + threads - 1) / threads;
-            fetch_samples <<<blocks, threads >>> (params, p, iteration == 0, cam);
-            checkCudaErrors(cudaGetLastError());
-        }
-
-        // check if not all paths terminated
-        // we don't want to check the metric after each bounce, we do it every numBouncesPerIter iterations
-        if (iteration > 0 && (iteration % opt.numBouncesPerIter) == 0) {
-            unsigned int num_active_paths;
-            checkCudaErrors(cudaMemcpy((void*)& num_active_paths, (void*)p.m.num_active_paths, sizeof(unsigned int), cudaMemcpyDeviceToHost));
-            if (num_active_paths < (opt.maxActivePaths * 0.05f)) {
-                break;
-            }
-        }
-
-        // traverse bvh
-        {
-            dim3 blocks(6400 * 2, 1);
-            dim3 threads(MaxBlockWidth, MaxBlockHeight);
-            trace_scattered << <blocks, threads >> > (params, p);
-            checkCudaErrors(cudaGetLastError());
-        }
-
-        // generate shadow rays
-        {
-            const int threads = 128;
-            const int blocks = (opt.maxActivePaths + threads - 1) / threads;
-            generate_shadow_raws << <blocks, threads >> > (params, p);
-            checkCudaErrors(cudaGetLastError());
-        }
-
-        // trace shadow rays
-        {
-            dim3 blocks(6400 * 2, 1);
-            dim3 threads(MaxBlockWidth, MaxBlockHeight);
-            trace_shadows << <blocks, threads >> > (params, p);
-            checkCudaErrors(cudaGetLastError());
-        }
-
-        // update paths accounting for intersection and light contribution
-        {
-            const int threads = 128;
-            const int blocks = (opt.maxActivePaths + threads - 1) / threads;
-            update << <blocks, threads >> > (params, p);
-            checkCudaErrors(cudaGetLastError());
-        }
-
-        // print metrics
-        if (opt.verbose) {
-            print_metrics << <1, 1 >> > (p.m, iteration, opt.maxActivePaths, (float)(clock() - start) / CLOCKS_PER_SEC, false);
-            checkCudaErrors(cudaGetLastError());
-        }
-        //checkCudaErrors(cudaDeviceSynchronize());
-
-        iteration++;
-    }
-    cudaProfilerStop();
-
-    print_metrics << <1, 1 >> > (p.m, iteration, opt.maxActivePaths, (float)(clock() - start) / CLOCKS_PER_SEC, true);
-    checkCudaErrors(cudaGetLastError());
-
-    checkCudaErrors(cudaDeviceSynchronize());
-    const ull max_samples = (ull)opt.nx * (ull)opt.ny * (ull)opt.ns;
-    cerr << "\rrendered " << max_samples << " samples in " << (float)(clock() - start) / CLOCKS_PER_SEC << " seconds.                                    \n";
+    while (!pollWindowEvents());
 
     char imagename[100];
     sprintf(imagename, "%s_%dx%dx%d_%d_bvh.png", opt.input, opt.nx, opt.ny, opt.ns, opt.dist);
     saveImage(opt, imagename);
 
     // clean up
+    destroyWindow();
+
     free_paths(p);
     releaseScene(d_colors);
     checkCudaErrors(cudaDeviceSynchronize());
