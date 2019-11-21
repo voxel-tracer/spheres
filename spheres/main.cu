@@ -61,6 +61,7 @@ typedef enum pathstate {
 
 struct paths {
     ull* next_sample; // used by init() to track next sample to fetch
+    ull* numsamples_perpixel; // how many samples have been traced per pixel so far
 
     // pixel_id of active paths currently being traced by the renderer, it's a subset of all_sample_pool
     unsigned int* active_paths;
@@ -101,6 +102,9 @@ void setup_paths(paths& p, int nx, int ny, int ns, unsigned int maxActivePaths) 
     checkCudaErrors(cudaMemset((void*)p.next_sample, 0, sizeof(ull)));
     checkCudaErrors(cudaMalloc((void**)& p.m.num_active_paths, sizeof(unsigned int)));
     p.m.allocateDeviceMem();
+
+    checkCudaErrors(cudaMalloc((void**)&p.numsamples_perpixel, nx * ny * sizeof(ull)));
+    checkCudaErrors(cudaMemset((void*)p.numsamples_perpixel, 0, nx * ny * sizeof(ull)));
 }
 
 void free_paths(const paths& p) {
@@ -121,6 +125,7 @@ void free_paths(const paths& p) {
 
     checkCudaErrors(cudaFree(p.m.num_active_paths));
     p.m.freeDeviceMem();
+    checkCudaErrors(cudaFree(p.numsamples_perpixel));
 }
 
 __global__ void fetch_samples(const render_params params, paths p, bool first, const camera cam) {
@@ -163,12 +168,13 @@ __global__ void fetch_samples(const render_params params, paths p, bool first, c
         // compute sample this lane is going to fetch
         const ull sample_id = nextSample + idxTerminated;
         const ull max_samples = (ull)params.width * (ull)params.height * (ull)params.spp;
-        if (sample_id >= max_samples)
-            return; // no more samples to fetch
+        //if (sample_id >= max_samples)
+        //    return; // no more samples to fetch
 
         // retrieve pixel_id corresponding to current path
-        const unsigned int pixel_id = sample_id / params.spp;
+        const unsigned int pixel_id = (sample_id / params.spp) % (params.width * params.height);
         p.active_paths[pid] = pixel_id;
+        atomicAdd(p.numsamples_perpixel + pixel_id, 1);
 
         // compute pixel coordinates
         const unsigned int x = pixel_id % params.width;
@@ -544,12 +550,13 @@ __device__ int rgbToInt(float r, float g, float b)
     return (int(b) << 16) | (int(g) << 8) | int(r);
 }
 
-__global__ void copyToUintBuffer(const render_params params, unsigned int* uint_render_buffer) {
-    const unsigned int pid = threadIdx.x + blockIdx.x * blockDim.x;
-    if (pid >= (params.width * params.height))
+__global__ void copyToUintBuffer(const render_params params, ull* numsamples_perpixel, unsigned int* uint_render_buffer) {
+    const unsigned int pixel_id = threadIdx.x + blockIdx.x * blockDim.x;
+    if (pixel_id >= (params.width * params.height))
         return;
-    const vec3 pixel = params.fb[pid];
-    uint_render_buffer[pid] = rgbToInt(pixel.r() / params.spp, pixel.g() / params.spp, pixel.b() / params.spp);
+    const vec3 pixel = params.fb[pixel_id];
+    const ull spp = numsamples_perpixel[pixel_id];
+    uint_render_buffer[pixel_id] = rgbToInt(pixel.r() / spp, pixel.g() / spp, pixel.b() / spp);
 }
 
 // for all non terminated rays, accounts for shadow hit, compute scattered ray and resets the flag
@@ -848,7 +855,7 @@ void render(const options& opt, const render_params& params, const paths& p, con
         if (opt.window) {
             const int threads = 128;
             const int blocks = (params.width * params.height + threads - 1) / threads;
-            copyToUintBuffer <<< blocks, threads >>> (params, d_cuda_render_buffer);
+            copyToUintBuffer <<< blocks, threads >>> (params, p.numsamples_perpixel, d_cuda_render_buffer);
 
             updateWindow();
         }
