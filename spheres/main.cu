@@ -39,6 +39,13 @@ vec3* d_fb;
 int* d_colors;
 unsigned int* d_cuda_render_buffer;
 
+// Camera controls
+camera* cam = NULL;
+float theta = 80 * kPI / 180;
+float phi = 45 * kPI / 180;
+const float delta = 1 * kPI / 180;
+bool camera_updated = false;
+
 struct render_params {
     vec3* fb;
     int leaf_offset;
@@ -80,6 +87,11 @@ struct paths {
 
     metrics m;
 };
+
+// Renderer
+unsigned int r_iteration = 0;
+unsigned int r_num_pixels = 0;
+paths* r_paths = NULL;
 
 void setup_paths(paths& p, int nx, int ny, int ns, unsigned int maxActivePaths) {
     // at any given moment only kMaxActivePaths at most are active at the same time
@@ -685,18 +697,19 @@ void releaseScene(int* d_colors) {
     checkCudaErrors(cudaFree(d_colors));
 }
 
-camera setup_camera(int nx, int ny, float dist) {
+void setup_camera(int nx, int ny, float dist) {
     vec3 lookfrom(dist, dist, dist);
     vec3 lookat(0, 0, 0);
     float dist_to_focus = (lookfrom - lookat).length();
     float aperture = 0.1;
-    return camera(lookfrom,
+    cam = new camera(lookfrom,
         lookat,
         vec3(0, 1, 0),
         30.0,
         float(nx) / float(ny),
         aperture,
         dist_to_focus);
+    cam->look_from(theta, phi);
 }
 
 void write_image(const char* output_file, const vec3 *fb, const int nx, const int ny, const int ns) {
@@ -842,13 +855,25 @@ bool renderIteration(const options& opt, const render_params& params, const path
     return true;
 }
 
-void render(const options& opt, const render_params& params, const paths& p, const camera& cam) {
+void resetRenderer() {
+    r_iteration = 0;
+    checkCudaErrors(cudaMemset(d_fb, 0, r_num_pixels * sizeof(vec3)));
+    checkCudaErrors(cudaMemset((void*)r_paths->next_sample, 0, sizeof(ull)));
+    checkCudaErrors(cudaMemset((void*)r_paths->numsamples_perpixel, 0, r_num_pixels * sizeof(ull)));
+}
+
+void render(const options& opt, const render_params& params, const paths& p, camera& cam) {
     clock_t start = clock();
     cudaProfilerStart();
 
-    unsigned int iteration = 0;
     while (!pollWindowEvents()) {
-        if (!renderIteration(opt, params, p, cam, iteration)) {
+        if (camera_updated) {
+            cam.look_from(theta, phi);
+            resetRenderer();
+            camera_updated = false;
+        }
+
+        if (!renderIteration(opt, params, p, cam, r_iteration)) {
             break;
         }
 
@@ -862,15 +887,15 @@ void render(const options& opt, const render_params& params, const paths& p, con
 
         // print metrics
         if (opt.verbose) {
-            print_metrics <<< 1, 1 >>> (p.m, iteration, opt.maxActivePaths, (float)(clock() - start) / CLOCKS_PER_SEC, false);
+            print_metrics <<< 1, 1 >>> (p.m, r_iteration, opt.maxActivePaths, (float)(clock() - start) / CLOCKS_PER_SEC, false);
             checkCudaErrors(cudaGetLastError());
         }
 
-        iteration++;
+        r_iteration++;
     }
     cudaProfilerStop();
 
-    print_metrics <<< 1, 1 >>> (p.m, iteration, opt.maxActivePaths, (float)(clock() - start) / CLOCKS_PER_SEC, true);
+    print_metrics <<< 1, 1 >>> (p.m, r_iteration, opt.maxActivePaths, (float)(clock() - start) / CLOCKS_PER_SEC, true);
     checkCudaErrors(cudaGetLastError());
 
     checkCudaErrors(cudaDeviceSynchronize());
@@ -879,7 +904,11 @@ void render(const options& opt, const render_params& params, const paths& p, con
 }
 
 void mouseMove(int dx, int dy) {
-    cout << "mouse drag (" << dx << ", " << dy << ")" << endl;
+    theta += -dy * delta;
+    //if (theta < delta) theta = delta;
+    //if (theta > (kPI/2 - delta)) theta = kPI/2 - delta;
+    phi += -dx * delta;
+    camera_updated = true;
 }
 
 int main(int argc, char** argv) {
@@ -897,18 +926,20 @@ int main(int argc, char** argv) {
     initCuda(opt);
     loadColormap(opt.colormap);
 
+    r_num_pixels = opt.nx * opt.ny;
+
     const int bvh_size = loadScene(opt);
 
-    camera cam = setup_camera(opt.nx, opt.ny, opt.dist);
+    setup_camera(opt.nx, opt.ny, opt.dist);
 
     render_params params = setupRenderParams(opt, bvh_size);
 
-    paths p;
-    setup_paths(p, opt.nx, opt.ny, opt.ns, opt.maxActivePaths);
+    r_paths = new paths();
+    setup_paths(*r_paths, opt.nx, opt.ny, opt.ns, opt.maxActivePaths);
 
     cout << "started renderer\n" << std::flush;
 
-    render(opt, params, p, cam);
+    render(opt, params, *r_paths, *cam);
 
     while (opt.window && !pollWindowEvents());
 
@@ -921,7 +952,9 @@ int main(int argc, char** argv) {
         destroyWindow();
     }
 
-    free_paths(p);
+    delete cam;
+    free_paths(*r_paths);
+    delete r_paths;
     releaseScene(d_colors);
     checkCudaErrors(cudaDeviceSynchronize());
     checkCudaErrors(cudaGetLastError());
