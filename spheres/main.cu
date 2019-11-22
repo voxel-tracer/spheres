@@ -878,6 +878,10 @@ void render(const options& opt, const render_params& params, const paths& p, con
     cerr << "\rrendered " << max_samples << " samples in " << (float)(clock() - start) / CLOCKS_PER_SEC << " seconds.                                    \n";
 }
 
+void mouseMove(int dx, int dy) {
+    cout << "mouse drag (" << dx << ", " << dy << ")" << endl;
+}
+
 int main(int argc, char** argv) {
     options opt;
     if (!parse_args(argc, argv, opt))
@@ -887,6 +891,7 @@ int main(int argc, char** argv) {
 
     if (opt.window) {
         initWindow(argc, argv, opt.nx, opt.ny, &d_cuda_render_buffer);
+        registerMouseMoveFunc(mouseMove);
     }
 
     initCuda(opt);

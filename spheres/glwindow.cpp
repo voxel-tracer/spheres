@@ -2,6 +2,8 @@
 #define GLEW_STATIC
 #endif
 
+#include "glwindow.h"
+
 // OpenGL
 #include <GL/glew.h> // Take care: GLEW should be included before GLFW
 #include <GLFW/glfw3.h>
@@ -19,6 +21,12 @@
 GLFWwindow* window;
 int w_width;
 int w_height;
+int w_mouse_x = 0;
+int w_mouse_y = 0;
+bool w_mouse_left_btn = false;
+bool w_mouse_right_btn = false;
+
+GLMouseMoveFunc w_mouseMoveFunc = NULL;
 
 // OpenGL
 GLuint VBO, VAO, EBO;
@@ -112,6 +120,35 @@ void initGLBuffers()
 void keyboardfunc(GLFWwindow* window, int key, int scancode, int action, int mods) {
 }
 
+void registerMouseMoveFunc(GLMouseMoveFunc func) {
+    w_mouseMoveFunc = func;
+}
+
+// Mouse position
+void mouseCursorPosFunc(GLFWwindow* window, double xpos, double ypos) {
+    if (!w_mouseMoveFunc)
+        return;
+    
+    if (w_mouse_left_btn)
+        w_mouseMoveFunc(w_mouse_x - xpos, w_mouse_y - ypos);
+
+    w_mouse_x = xpos;
+    w_mouse_y = ypos;
+}
+
+void mouseButtonFunc(GLFWwindow* window, int button, int action, int mods) {
+    if (!w_mouseMoveFunc)
+        return;
+
+    if (action == GLFW_PRESS) {
+        w_mouse_left_btn = (GLFW_MOUSE_BUTTON_LEFT == button);
+        w_mouse_right_btn = (GLFW_MOUSE_BUTTON_RIGHT == button);
+    }
+    else if (action == GLFW_RELEASE) {
+        w_mouse_left_btn = w_mouse_right_btn = false;
+    }
+}
+
 bool initGL() {
     glewExperimental = GL_TRUE; // need this to enforce core profile
     GLenum err = glewInit();
@@ -148,6 +185,8 @@ bool initGLFW() {
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);
     glfwSetKeyCallback(window, keyboardfunc);
+    glfwSetCursorPosCallback(window, mouseCursorPosFunc);
+    glfwSetMouseButtonCallback(window, mouseButtonFunc);
     return true;
 }
 
