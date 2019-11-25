@@ -129,8 +129,8 @@ void mouseCursorPosFunc(GLFWwindow* window, double xpos, double ypos) {
     if (!w_mouseMoveFunc)
         return;
     
-    if (w_mouse_left_btn)
-        w_mouseMoveFunc(w_mouse_x - xpos, w_mouse_y - ypos);
+    if (w_mouse_left_btn || w_mouse_right_btn)
+        w_mouseMoveFunc(w_mouse_x - xpos, w_mouse_y - ypos, w_mouse_left_btn ? MOUSE_LEFT : MOUSE_RIGHT);
 
     w_mouse_x = xpos;
     w_mouse_y = ypos;

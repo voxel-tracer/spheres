@@ -41,9 +41,11 @@ unsigned int* d_cuda_render_buffer;
 
 // Camera controls
 camera* cam = NULL;
-float theta = 80 * kPI / 180;
-float phi = 45 * kPI / 180;
-const float delta = 1 * kPI / 180;
+float c_theta = 80 * kPI / 180;
+float c_phi = 45 * kPI / 180;
+float c_relative_dist = 1.0f;
+const float c_rotation_speed = 1 * kPI / 180;
+const float c_zoom_speed = 1.0f / 100;
 bool camera_updated = false;
 
 struct render_params {
@@ -179,7 +181,7 @@ __global__ void fetch_samples(const render_params params, paths p, bool first, c
 
         // compute sample this lane is going to fetch
         const ull sample_id = nextSample + idxTerminated;
-        const ull max_samples = (ull)params.width * (ull)params.height * (ull)params.spp;
+        //const ull max_samples = (ull)params.width * (ull)params.height * (ull)params.spp;
         //if (sample_id >= max_samples)
         //    return; // no more samples to fetch
 
@@ -709,7 +711,7 @@ void setup_camera(int nx, int ny, float dist) {
         float(nx) / float(ny),
         aperture,
         dist_to_focus);
-    cam->look_from(theta, phi);
+    cam->look_from(c_theta, c_phi, c_relative_dist);
 }
 
 void write_image(const char* output_file, const vec3 *fb, const int nx, const int ny, const int ns) {
@@ -868,7 +870,7 @@ void render(const options& opt, const render_params& params, const paths& p, cam
 
     while (!pollWindowEvents()) {
         if (camera_updated) {
-            cam.look_from(theta, phi);
+            cam.look_from(c_theta, c_phi, c_relative_dist);
             resetRenderer();
             camera_updated = false;
         }
@@ -903,11 +905,20 @@ void render(const options& opt, const render_params& params, const paths& p, cam
     cerr << "\rrendered " << max_samples << " samples in " << (float)(clock() - start) / CLOCKS_PER_SEC << " seconds.                                    \n";
 }
 
-void mouseMove(int dx, int dy) {
-    theta += -dy * delta;
-    //if (theta < delta) theta = delta;
-    //if (theta > (kPI/2 - delta)) theta = kPI/2 - delta;
-    phi += -dx * delta;
+void mouseMove(int dx, int dy, int mouse_btn) {
+    if (mouse_btn == MOUSE_LEFT) {
+        c_theta += -dy * c_rotation_speed;
+        //if (theta < delta) theta = delta;
+        //if (theta > (kPI/2 - delta)) theta = kPI/2 - delta;
+        c_phi += -dx * c_rotation_speed;
+    }
+    else {
+        // drag with right button changes camera distance
+        // only x movement is taken into account
+        c_relative_dist += dx * c_zoom_speed;
+        if (c_relative_dist < 0.1f)
+            c_relative_dist = 0.1f;
+    }
     camera_updated = true;
 }
 

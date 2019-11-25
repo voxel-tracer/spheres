@@ -30,11 +30,12 @@ public:
         vertical = 2 * half_height * focus_dist * v;
     }
 
-    void look_from(float theta, float phi) {
+    void look_from(float theta, float phi, float relative_distance) {
+        const float distance = relative_distance * radial_distance;
         init(vec3(
-            radial_distance * sinf(theta) * sinf(phi),
-            radial_distance * cosf(theta),
-            radial_distance * sinf(theta) * cosf(phi)) + lookat
+            distance * sinf(theta) * sinf(phi),
+            distance * cosf(theta),
+            distance * sinf(theta) * cosf(phi)) + lookat
         );
     }
 
