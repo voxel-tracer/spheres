@@ -209,8 +209,30 @@ void copyCUDAImageToTexture()
     checkCudaErrors(cudaGraphicsUnmapResources(1, &cuda_tex_resource, 0));
 }
 
+bool renderImGui(GuiParams& guiParams) {
+    bool changed = false;
+    ImGui::Begin("Render Options");
+    if (ImGui::SliderInt("max bounces", &guiParams.maxBounces, 0, 1000))
+        changed = true;
+
+    if (ImGui::SliderFloat("light radius", &guiParams.lightRadius, 1, 1000))
+        changed = true;
+    if (ImGui::ColorEdit3("light color", guiParams.lightColor))
+        changed = true;
+    if (ImGui::SliderFloat("light intensity", &guiParams.lightIntensity, 0, 1000))
+        changed = true;
+
+    if (ImGui::ColorEdit3("sky color", guiParams.skyColor))
+        changed = true;
+    if (ImGui::SliderFloat("sky intensity", &guiParams.skyIntensity, 0, 10))
+        changed = true;
+    ImGui::End();
+
+    return changed;
+}
+
 // call this after the CUDA kernel is done updating 
-void updateWindow(void) {
+void updateWindow(GuiParams& guiParams, bool& paramsChanged) {
     copyCUDAImageToTexture();
     glfwPollEvents();
     // Clear the color buffer
@@ -233,13 +255,7 @@ void updateWindow(void) {
     glBindVertexArray(0); // unbind VAO
 
     // render your GUI
-    ImGui::Begin("Demo window");
-    static float rotation = 0.0f;
-    if (ImGui::SliderFloat("rotation", &rotation, 0.0f, 1.0f)) {
-        printf("rotation changed to %.2f\n", rotation);
-        fflush(stdout);
-    }
-    ImGui::End();
+    paramsChanged = renderImGui(guiParams);
 
     // render dear imgui into the screen
     ImGui::Render();

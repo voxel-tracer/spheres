@@ -24,7 +24,6 @@ using namespace std;
 
 const int MaxBlockWidth = 32;
 const int MaxBlockHeight = 2; // block width is 32
-const int kMaxBounces = 10;
 
 typedef unsigned long long ull;
 
@@ -57,6 +56,12 @@ struct render_params {
     unsigned int maxActivePaths;
 
     int* colors;
+
+    int maxBounces;
+    float lightRadius;
+    vec3 lightColor;
+
+    vec3 skyColor;
 };
 
 typedef enum pathstate {
@@ -375,11 +380,11 @@ __global__ void trace_scattered(const render_params params, paths p) {
 }
 
 // generate shadow rays for all non terminated rays with intersections
-__global__ void generate_shadow_raws(const render_params params, paths p) {
+__global__ void generate_shadow_rays(const render_params params, paths p) {
 
     const vec3 light_center(5000, 0, 0);
-    const float light_radius = 500;
-    const float light_emissive = 100;
+    const float light_radius = params.lightRadius;
+    const vec3 light_color = params.lightColor;
 
     // kMaxActivePaths threads update all p.num_active_paths
     const unsigned int pid = threadIdx.x + blockIdx.x * blockDim.x;
@@ -422,7 +427,7 @@ __global__ void generate_shadow_raws(const render_params params, paths p) {
 
     const float omega = 2 * kPI * (1.0f - cosAMax);
     p.shadow[pid] = ray(hit_p, l);
-    p.emitted[pid] = vec3(light_emissive, light_emissive, light_emissive) * dotl * omega / kPI;
+    p.emitted[pid] = light_color * dotl * omega / kPI;
     p.pstate[pid] = SHADOW;
 }
 
@@ -575,7 +580,7 @@ __global__ void copyToUintBuffer(const render_params params, ull* numsamples_per
 
 // for all non terminated rays, accounts for shadow hit, compute scattered ray and resets the flag
 __global__ void update(const render_params params, paths p) {
-    const float sky_emissive = .2f;
+    const vec3 sky_emissive = params.skyColor;
 
     // kMaxActivePaths threads update all p.num_active_paths
     const unsigned int pid = threadIdx.x + blockIdx.x * blockDim.x;
@@ -609,7 +614,7 @@ __global__ void update(const render_params params, paths p) {
 
         // scatter ray, only if we didn't reach kMaxBounces
         bounce++;
-        if (bounce < kMaxBounces) {
+        if (bounce < params.maxBounces) {
             const ray r = p.r[pid];
             const float hit_t = p.hit_t[pid];
             const vec3 hit_p = r.point_at_parameter(hit_t);
@@ -802,7 +807,7 @@ render_params setupRenderParams(options opt, int bvh_size) {
     return params;
 }
 
-bool renderIteration(const options& opt, const render_params& params, const paths& p, const camera& cam, unsigned int iteration) {
+bool renderIteration(const options& opt, const render_params& params, const paths& p, const camera& cam, unsigned int iteration, bool lightEnabled) {
 
     // init kMaxActivePaths using equal number of threads
     {
@@ -831,14 +836,16 @@ bool renderIteration(const options& opt, const render_params& params, const path
     }
 
     // generate shadow rays
+    if (lightEnabled)
     {
         const int threads = 128;
         const int blocks = (opt.maxActivePaths + threads - 1) / threads;
-        generate_shadow_raws <<< blocks, threads >>> (params, p);
+        generate_shadow_rays <<< blocks, threads >>> (params, p);
         checkCudaErrors(cudaGetLastError());
     }
 
     // trace shadow rays
+    if (lightEnabled)
     {
         dim3 blocks(6400 * 2, 1);
         dim3 threads(MaxBlockWidth, MaxBlockHeight);
@@ -864,18 +871,28 @@ void resetRenderer() {
     checkCudaErrors(cudaMemset((void*)r_paths->numsamples_perpixel, 0, r_num_pixels * sizeof(ull)));
 }
 
-void render(const options& opt, const render_params& params, const paths& p, camera& cam) {
+void render(const options& opt, render_params& params, const paths& p, camera& cam) {
+    static GuiParams guiParams;
+    bool guiChanged = true;
+    bool lightEnabled = true;
     clock_t start = clock();
     cudaProfilerStart();
 
     while (!pollWindowEvents()) {
-        if (camera_updated) {
+        if (camera_updated || guiChanged) {
             cam.look_from(c_theta, c_phi, c_relative_dist);
             resetRenderer();
             camera_updated = false;
+            guiChanged = false;
+
+            params.maxBounces = guiParams.maxBounces;
+            params.lightRadius = guiParams.lightRadius;
+            params.lightColor = vec3(guiParams.lightColor[0], guiParams.lightColor[1], guiParams.lightColor[2]) * guiParams.lightIntensity;
+            lightEnabled = guiParams.lightIntensity > 0;
+            params.skyColor = vec3(guiParams.skyColor[0], guiParams.skyColor[1], guiParams.skyColor[2]) * guiParams.skyIntensity;
         }
 
-        if (!renderIteration(opt, params, p, cam, r_iteration)) {
+        if (!renderIteration(opt, params, p, cam, r_iteration, lightEnabled)) {
             break;
         }
 
@@ -884,7 +901,7 @@ void render(const options& opt, const render_params& params, const paths& p, cam
             const int blocks = (params.width * params.height + threads - 1) / threads;
             copyToUintBuffer <<< blocks, threads >>> (params, p.numsamples_perpixel, d_cuda_render_buffer);
 
-            updateWindow();
+            updateWindow(guiParams, guiChanged);
         }
 
         // print metrics

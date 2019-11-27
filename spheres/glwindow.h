@@ -5,8 +5,20 @@
 
 typedef void(*GLMouseMoveFunc) (int, int, int);
 
+// params sets through GUI
+struct GuiParams {
+    int maxBounces = 10;
+
+    float lightRadius = 500;
+    float lightColor[3] = { 1, 1, 1 };
+    float lightIntensity = 100;
+
+    float skyColor[3] = { 1, 1, 1 };
+    float skyIntensity = 0.2f;
+};
+
 void initWindow(int argc, char* argv[], int width, int height, unsigned int** _cuda_dev_render_buffer);
 void registerMouseMoveFunc(GLMouseMoveFunc func);
-void updateWindow(void);
+void updateWindow(GuiParams& guiParams, bool& paramsChanged);
 bool pollWindowEvents();
 void destroyWindow();
