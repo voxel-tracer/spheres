@@ -119,7 +119,6 @@ void setup_paths(paths& p, int nx, int ny, int ns, unsigned int maxActivePaths) 
 
     checkCudaErrors(cudaMalloc((void**)& p.next_sample, sizeof(ull)));
     checkCudaErrors(cudaMemset((void*)p.next_sample, 0, sizeof(ull)));
-    checkCudaErrors(cudaMalloc((void**)& p.m.num_active_paths, sizeof(unsigned int)));
     p.m.allocateDeviceMem();
 
     checkCudaErrors(cudaMalloc((void**)&p.numsamples_perpixel, nx * ny * sizeof(ull)));
@@ -142,7 +141,6 @@ void free_paths(const paths& p) {
     checkCudaErrors(cudaFree(p.active_paths));
     checkCudaErrors(cudaFree(p.next_path));
 
-    checkCudaErrors(cudaFree(p.m.num_active_paths));
     p.m.freeDeviceMem();
     checkCudaErrors(cudaFree(p.numsamples_perpixel));
 }
@@ -208,10 +206,6 @@ __global__ void fetch_samples(const render_params params, paths p, bool first, c
         p.bounce[pid] = 0;
         p.pstate[pid] = SCATTER;
     }
-
-    // path still active or has just been generated
-    //TODO each warp uses activemask() to count number active lanes then just 1st active lane need to update the metric
-    atomicAdd(p.m.num_active_paths, 1);
 }
 
 #define IDX_SENTINEL    0
@@ -777,12 +771,6 @@ void saveImage(const options opt, const char* filename) {
     delete[] h_fb;
 }
 
-void printRenderParams(const options opt) {
-    cout << "Rendering a " << opt.nx << "x" << opt.ny << " image with " 
-         << opt.ns << " samples per pixel, maxActivePaths = " << opt.maxActivePaths 
-         << ", numBouncesPerIter = " << opt.numBouncesPerIter << "\n";
-}
-
 int loadScene(const options opt) {
     scene sc;
     if (!opt.binary) {
@@ -810,7 +798,7 @@ render_params setupRenderParams(options opt, int bvh_size) {
     return params;
 }
 
-bool renderIteration(const options& opt, const render_params& params, const paths& p, const camera& cam, unsigned int iteration, bool lightEnabled) {
+void renderIteration(const options& opt, const render_params& params, const paths& p, const camera& cam, unsigned int iteration, bool lightEnabled) {
 
     // init kMaxActivePaths using equal number of threads
     {
@@ -818,16 +806,6 @@ bool renderIteration(const options& opt, const render_params& params, const path
         const int blocks = (opt.maxActivePaths + threads - 1) / threads;
         fetch_samples <<< blocks, threads >>> (params, p, iteration == 0, cam);
         checkCudaErrors(cudaGetLastError());
-    }
-
-    // check if not all paths terminated
-    // we don't want to check the metric after each bounce, we do it every numBouncesPerIter iterations
-    if (iteration > 0 && (iteration % opt.numBouncesPerIter) == 0) {
-        unsigned int num_active_paths;
-        checkCudaErrors(cudaMemcpy((void*)&num_active_paths, (void*)p.m.num_active_paths, sizeof(unsigned int), cudaMemcpyDeviceToHost));
-        if (num_active_paths < (opt.maxActivePaths * 0.05f)) {
-            return false;
-        }
     }
 
     // traverse bvh
@@ -863,8 +841,6 @@ bool renderIteration(const options& opt, const render_params& params, const path
         update <<< blocks, threads >>> (params, p);
         checkCudaErrors(cudaGetLastError());
     }
-
-    return true;
 }
 
 void resetRenderer() {
@@ -895,11 +871,9 @@ void render(const options& opt, render_params& params, const paths& p, camera& c
             params.skyColor = vec3(guiParams.skyColor[0], guiParams.skyColor[1], guiParams.skyColor[2]) * guiParams.skyIntensity;
         }
 
-        if (!renderIteration(opt, params, p, cam, r_iteration, lightEnabled)) {
-            break;
-        }
+        renderIteration(opt, params, p, cam, r_iteration, lightEnabled);
 
-        if (opt.window) {
+        {
             const int threads = 128;
             const int blocks = (params.width * params.height + threads - 1) / threads;
             copyToUintBuffer <<< blocks, threads >>> (params, p.numsamples_perpixel, d_cuda_render_buffer);
@@ -921,8 +895,6 @@ void render(const options& opt, render_params& params, const paths& p, camera& c
     checkCudaErrors(cudaGetLastError());
 
     checkCudaErrors(cudaDeviceSynchronize());
-    const ull max_samples = (ull)opt.nx * (ull)opt.ny * (ull)opt.ns;
-    cerr << "\rrendered " << max_samples << " samples in " << (float)(clock() - start) / CLOCKS_PER_SEC << " seconds.                                    \n";
 }
 
 void mouseMove(int dx, int dy, int mouse_btn) {
@@ -946,13 +918,9 @@ int main(int argc, char** argv) {
     options opt;
     if (!parse_args(argc, argv, opt))
         return -1;
-    
-    printRenderParams(opt);
 
-    if (opt.window) {
-        initWindow(argc, argv, opt.nx, opt.ny, &d_cuda_render_buffer);
-        registerMouseMoveFunc(mouseMove);
-    }
+    initWindow(argc, argv, opt.nx, opt.ny, &d_cuda_render_buffer);
+    registerMouseMoveFunc(mouseMove);
 
     initCuda(opt);
     loadColormap(opt.colormap);
@@ -972,16 +940,12 @@ int main(int argc, char** argv) {
 
     render(opt, params, *r_paths, *cam);
 
-    while (opt.window && !pollWindowEvents());
-
     char imagename[100];
     sprintf(imagename, "%s_%dx%dx%d_%d_bvh.png", opt.input, opt.nx, opt.ny, opt.ns, opt.dist);
     saveImage(opt, imagename);
 
     // clean up
-    if (opt.window) {
-        destroyWindow();
-    }
+    destroyWindow();
 
     delete cam;
     free_paths(*r_paths);

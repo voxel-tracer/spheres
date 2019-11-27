@@ -321,7 +321,6 @@ struct lanes_histo {
 };
 
 struct metrics {
-    unsigned int* num_active_paths;
     lanes_histo lanes_cnt;
     counter cnt;
     multi_iter_warp_counter multi;
@@ -353,7 +352,6 @@ struct metrics {
 
     __device__ void reset(int pid, bool first) {
         if (pid == 0) {
-            num_active_paths[0] = 0;
             lanes_cnt.reset();
             //if (first)
             cnt.reset();
