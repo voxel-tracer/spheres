@@ -16,6 +16,10 @@
 // C++ libs
 #include "shader_tools/GLSLProgram.h"
 #include "shader_tools/GLSLShader.h"
+// ImGui
+#include "imgui/imgui.h"
+#include "imgui/imgui_impl_glfw.h"
+#include "imgui/imgui_impl_opengl3.h"
 
 // GLFW
 GLFWwindow* window;
@@ -126,7 +130,7 @@ void registerMouseMoveFunc(GLMouseMoveFunc func) {
 
 // Mouse position
 void mouseCursorPosFunc(GLFWwindow* window, double xpos, double ypos) {
-    if (!w_mouseMoveFunc)
+    if (!w_mouseMoveFunc || ImGui::GetIO().WantCaptureMouse)
         return;
     
     if (w_mouse_left_btn || w_mouse_right_btn)
@@ -137,7 +141,7 @@ void mouseCursorPosFunc(GLFWwindow* window, double xpos, double ypos) {
 }
 
 void mouseButtonFunc(GLFWwindow* window, int button, int action, int mods) {
-    if (!w_mouseMoveFunc)
+    if (!w_mouseMoveFunc || ImGui::GetIO().WantCaptureMouse)
         return;
 
     if (action == GLFW_PRESS) {
@@ -213,6 +217,11 @@ void updateWindow(void) {
     glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
 
+    // feed input to dear imgui, start new frame
+    ImGui_ImplOpenGL3_NewFrame();
+    ImGui_ImplGlfw_NewFrame();
+    ImGui::NewFrame();
+
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, opengl_tex_cuda);
 
@@ -223,10 +232,34 @@ void updateWindow(void) {
     glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
     glBindVertexArray(0); // unbind VAO
 
+    // render your GUI
+    ImGui::Begin("Demo window");
+    static float rotation = 0.0f;
+    if (ImGui::SliderFloat("rotation", &rotation, 0.0f, 1.0f)) {
+        printf("rotation changed to %.2f\n", rotation);
+        fflush(stdout);
+    }
+    ImGui::End();
+
+    // render dear imgui into the screen
+    ImGui::Render();
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
     SDK_CHECK_ERROR_GL();
 
     // Swap the screen buffers
     glfwSwapBuffers(window);
+}
+
+void initImGui() {
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    // setup platform/renderer bindings
+    ImGui_ImplGlfw_InitForOpenGL(window, true);
+    ImGui_ImplOpenGL3_Init("#version 430");
+    // setup dear imgui style
+    ImGui::StyleColorsDark();
 }
 
 void initWindow(int argc, char* argv[], int width, int height, unsigned int** _cuda_dev_render_buffer) {
@@ -273,6 +306,8 @@ void initWindow(int argc, char* argv[], int width, int height, unsigned int** _c
     // Unbind VAO (it's always a good thing to unbind any buffer/array to prevent strange bugs), remember: do NOT unbind the EBO, keep it bound to this VAO
     // A VAO stores the glBindBuffer calls when the target is GL_ELEMENT_ARRAY_BUFFER. 
     // This also means it stores its unbind calls so make sure you don't unbind the element array buffer before unbinding your VAO, otherwise it doesn't have an EBO configured.
+
+    initImGui();
 }
 
 // return true if user closed the window
@@ -281,7 +316,15 @@ bool pollWindowEvents() {
     return glfwWindowShouldClose(window);
 }
 
+void destroyImGui() {
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
+}
+
 void destroyWindow() {
+    destroyImGui();
+
     glfwDestroyWindow(window);
     glfwTerminate();
     checkCudaErrors(cudaFree(cuda_dev_render_buffer));
