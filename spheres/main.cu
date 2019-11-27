@@ -720,17 +720,20 @@ void setup_camera(int nx, int ny, float dist) {
 }
 
 void write_image(const char* output_file, const vec3 *fb, const int nx, const int ny, const int ns) {
-    char *data = new char[nx * ny * 3];
+    unsigned int* idata = new unsigned int[nx * ny];
+    checkCudaErrors(cudaMemcpy(idata, d_cuda_render_buffer, nx * ny * sizeof(unsigned int), cudaMemcpyDeviceToHost));
+
+    char* data = new char[nx * ny * 3];
     int idx = 0;
-    for (int j = ny - 1; j >= 0; j--) {
-        for (int i = 0; i < nx; i++) {
-            size_t pixel_index = j * nx + i;
-            data[idx++] = LinearToSRGB(fb[pixel_index].r() / ns);
-            data[idx++] = LinearToSRGB(fb[pixel_index].g() / ns);
-            data[idx++] = LinearToSRGB(fb[pixel_index].b() / ns);
-        }
+    for (size_t i = 0; i < nx * ny; i++) {
+        unsigned int pixel = idata[i];
+        data[idx++] = pixel & 0xFF;
+        data[idx++] = (pixel & 0xFF00) >> 8;
+        data[idx++] = (pixel & 0xFF0000) >> 16;
     }
     stbi_write_png(output_file, nx, ny, 3, (void*)data, nx * 3);
+
+    delete[] idata;
     delete[] data;
 }
 
