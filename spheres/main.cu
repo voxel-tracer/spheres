@@ -713,7 +713,7 @@ void setup_camera(int nx, int ny, float dist) {
     cam->look_from(c_theta, c_phi, c_relative_dist);
 }
 
-void write_image(const char* output_file, const vec3 *fb, const int nx, const int ny, const int ns) {
+void write_image(const char* output_file, const int nx, const int ny) {
     unsigned int* idata = new unsigned int[nx * ny];
     checkCudaErrors(cudaMemcpy(idata, d_cuda_render_buffer, nx * ny * sizeof(unsigned int), cudaMemcpyDeviceToHost));
 
@@ -760,15 +760,6 @@ void loadColormap(const char* filename) {
     // copy colors to constant memory
     checkCudaErrors(cudaMemcpyToSymbol(d_colormap, colormap, 256 * 3 * sizeof(float)));
     delete[] colormap;
-}
-
-void saveImage(const options opt, const char* filename) {
-    int num_pixels = opt.nx * opt.ny;
-    size_t fb_size = num_pixels * sizeof(vec3);
-    vec3* h_fb = new vec3[fb_size];
-    checkCudaErrors(cudaMemcpy(h_fb, d_fb, fb_size, cudaMemcpyDeviceToHost));
-    write_image(filename, h_fb, opt.nx, opt.ny, opt.ns);
-    delete[] h_fb;
 }
 
 int loadScene(const options opt) {
@@ -888,6 +879,8 @@ void render(const options& opt, render_params& params, const paths& p, camera& c
         }
 
         r_iteration++;
+        if (r_iteration > 0 && !(r_iteration % 100))
+            write_image("temp_save.png", params.width, params.height);
     }
     cudaProfilerStop();
 
@@ -942,7 +935,7 @@ int main(int argc, char** argv) {
 
     char imagename[100];
     sprintf(imagename, "%s_%dx%dx%d_%d_bvh.png", opt.input, opt.nx, opt.ny, opt.ns, opt.dist);
-    saveImage(opt, imagename);
+    write_image(imagename, opt.nx, opt.ny);
 
     // clean up
     destroyWindow();
