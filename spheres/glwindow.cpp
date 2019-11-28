@@ -23,8 +23,9 @@
 
 // GLFW
 GLFWwindow* window;
-int w_width;
-int w_height;
+const int WIDTH = 512;
+const int HEIGHT = 512;
+
 int w_mouse_x = 0;
 int w_mouse_y = 0;
 bool w_mouse_left_btn = false;
@@ -37,6 +38,9 @@ GLuint VBO, VAO, EBO;
 GLSLShader drawtex_f; // GLSL fragment shader
 GLSLShader drawtex_v; // GLSL fragment shader
 GLSLProgram shdrawtex; // GLSLS program for textured draw
+// Texture size
+int t_width;
+int t_height;
 
 // Cuda <-> OpenGl interop resources
 void* cuda_dev_render_buffer; // Cuda buffer for initial render
@@ -111,7 +115,7 @@ void createGLTextureForCUDA(GLuint* gl_tex, cudaGraphicsResource** cuda_tex, uns
 void initGLBuffers()
 {
     // create texture that will receive the result of cuda kernel
-    createGLTextureForCUDA(&opengl_tex_cuda, &cuda_tex_resource, w_width, w_height);
+    createGLTextureForCUDA(&opengl_tex_cuda, &cuda_tex_resource, t_width, t_height);
     // create shader program
     drawtex_v = GLSLShader("Textured draw vertex shader", glsl_drawtex_vertshader_src, GL_VERTEX_SHADER);
     drawtex_f = GLSLShader("Textured draw fragment shader", glsl_drawtex_fragshader_src, GL_FRAGMENT_SHADER);
@@ -161,7 +165,7 @@ bool initGL() {
         printf("glewInit failed: %s /n", glewGetErrorString(err));
         exit(1);
     }
-    glViewport(0, 0, w_width, w_height); // viewport for x,y to normalized device coordinates transformation
+    glViewport(0, 0, 512, 512); // viewport for x,y to normalized device coordinates transformation
     SDK_CHECK_ERROR_GL();
     return true;
 }
@@ -184,7 +188,7 @@ bool initGLFW() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    window = glfwCreateWindow(w_width, w_height, "Voxel Renderer", NULL, NULL);
+    window = glfwCreateWindow(512, 512, "Voxel Renderer", NULL, NULL);
     if (!window) { glfwTerminate(); exit(EXIT_FAILURE); }
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);
@@ -202,7 +206,7 @@ void copyCUDAImageToTexture()
     checkCudaErrors(cudaGraphicsMapResources(1, &cuda_tex_resource, 0));
     checkCudaErrors(cudaGraphicsSubResourceGetMappedArray(&texture_ptr, cuda_tex_resource, 0, 0));
 
-    int num_texels = w_width * w_height;
+    int num_texels = t_width * t_height;
     int num_values = num_texels * 4;
     int size_tex_data = sizeof(GLubyte) * num_values;
     checkCudaErrors(cudaMemcpyToArray(texture_ptr, 0, 0, cuda_dev_render_buffer, size_tex_data, cudaMemcpyDeviceToDevice));
