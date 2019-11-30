@@ -165,7 +165,7 @@ bool initGL() {
         printf("glewInit failed: %s /n", glewGetErrorString(err));
         exit(1);
     }
-    glViewport(0, 0, 512, 512); // viewport for x,y to normalized device coordinates transformation
+    glViewport(0, 0, WIDTH, HEIGHT); // viewport for x,y to normalized device coordinates transformation
     SDK_CHECK_ERROR_GL();
     return true;
 }
@@ -173,7 +173,7 @@ bool initGL() {
 void initCUDABuffers(unsigned int ** _cuda_dev_render_buffer)
 {
     // set up vertex data parameters
-    num_texels = w_width * w_height;
+    num_texels = t_width * t_height;
     num_values = num_texels * 4;
     size_tex_data = sizeof(GLubyte) * num_values;
     // We don't want to use cudaMallocManaged here - since we definitely want
@@ -188,7 +188,7 @@ bool initGLFW() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    window = glfwCreateWindow(512, 512, "Voxel Renderer", NULL, NULL);
+    window = glfwCreateWindow(WIDTH, HEIGHT, "Voxel Renderer", NULL, NULL);
     if (!window) { glfwTerminate(); exit(EXIT_FAILURE); }
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);
@@ -283,8 +283,8 @@ void initImGui() {
 }
 
 void initWindow(int argc, char* argv[], int width, int height, unsigned int** _cuda_dev_render_buffer) {
-    w_width = width;
-    w_height = height;
+    t_width = width;
+    t_height = height;
 
     initGLFW();
     initGL();
