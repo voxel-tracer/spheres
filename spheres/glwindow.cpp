@@ -216,19 +216,18 @@ void copyCUDAImageToTexture()
 bool renderImGui(GuiParams& guiParams) {
     bool changed = false;
     ImGui::Begin("Render Options");
-    if (ImGui::SliderInt("max bounces", &guiParams.maxBounces, 0, 1000))
+    if (ImGui::InputInt("max bounces", &guiParams.maxBounces))
         changed = true;
-
-    if (ImGui::SliderFloat("light radius", &guiParams.lightRadius, 1, 1000))
+    if (ImGui::InputFloat("light radius", &guiParams.lightRadius, 1, 100))
         changed = true;
     if (ImGui::ColorEdit3("light color", guiParams.lightColor))
         changed = true;
-    if (ImGui::SliderFloat("light intensity", &guiParams.lightIntensity, 0, 1000))
+    if (ImGui::InputFloat("light intensity", &guiParams.lightIntensity, 10, 1000))
         changed = true;
 
     if (ImGui::ColorEdit3("sky color", guiParams.skyColor))
         changed = true;
-    if (ImGui::SliderFloat("sky intensity", &guiParams.skyIntensity, 0, 10))
+    if (ImGui::InputFloat("sky intensity", &guiParams.skyIntensity, 0.1f, 10))
         changed = true;
     ImGui::End();
 

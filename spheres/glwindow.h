@@ -15,6 +15,9 @@ struct GuiParams {
 
     float skyColor[3] = { 1, 1, 1 };
     float skyIntensity = 0.2f;
+
+    int camera_theta = 80;
+    int camera_phi = 45;
 };
 
 void initWindow(int argc, char* argv[], int width, int height, unsigned int** _cuda_dev_render_buffer);

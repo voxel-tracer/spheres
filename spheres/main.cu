@@ -38,12 +38,12 @@ vec3* d_fb;
 int* d_colors;
 unsigned int* d_cuda_render_buffer;
 
+GuiParams guiParams;
+
 // Camera controls
 camera* cam = NULL;
-float c_theta = 80 * kPI / 180;
-float c_phi = 45 * kPI / 180;
 float c_relative_dist = 1.0f;
-const float c_rotation_speed = 1 * kPI / 180;
+const int c_rotation_speed = 1;
 const float c_zoom_speed = 1.0f / 100;
 bool camera_updated = false;
 
@@ -710,7 +710,7 @@ void setup_camera(int nx, int ny, float dist) {
         float(nx) / float(ny),
         aperture,
         dist_to_focus);
-    cam->look_from(c_theta, c_phi, c_relative_dist);
+    cam->look_from(guiParams.camera_theta, guiParams.camera_phi, c_relative_dist);
 }
 
 void write_image(const char* output_file, const int nx, const int ny) {
@@ -842,7 +842,6 @@ void resetRenderer() {
 }
 
 void render(const options& opt, render_params& params, const paths& p, camera& cam) {
-    static GuiParams guiParams;
     bool guiChanged = true;
     bool lightEnabled = true;
     clock_t start = clock();
@@ -850,7 +849,7 @@ void render(const options& opt, render_params& params, const paths& p, camera& c
 
     while (!pollWindowEvents()) {
         if (camera_updated || guiChanged) {
-            cam.look_from(c_theta, c_phi, c_relative_dist);
+            cam.look_from(guiParams.camera_theta, guiParams.camera_phi, c_relative_dist);
             resetRenderer();
             camera_updated = false;
             guiChanged = false;
@@ -892,10 +891,10 @@ void render(const options& opt, render_params& params, const paths& p, camera& c
 
 void mouseMove(int dx, int dy, int mouse_btn) {
     if (mouse_btn == MOUSE_LEFT) {
-        c_theta += -dy * c_rotation_speed;
+        guiParams.camera_theta += -dy * c_rotation_speed;
         //if (theta < delta) theta = delta;
         //if (theta > (kPI/2 - delta)) theta = kPI/2 - delta;
-        c_phi += -dx * c_rotation_speed;
+        guiParams.camera_phi += -dx * c_rotation_speed;
     }
     else {
         // drag with right button changes camera distance
