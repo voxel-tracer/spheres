@@ -710,7 +710,7 @@ void setup_camera(int nx, int ny, float dist) {
         float(nx) / float(ny),
         aperture,
         dist_to_focus);
-    cam->look_from(guiParams.camera_theta, guiParams.camera_phi, c_relative_dist);
+    cam->look_from(guiParams.camera[0], guiParams.camera[1], c_relative_dist);
 }
 
 void write_image(const char* output_file, const int nx, const int ny) {
@@ -849,7 +849,7 @@ void render(const options& opt, render_params& params, const paths& p, camera& c
 
     while (!pollWindowEvents()) {
         if (camera_updated || guiChanged) {
-            cam.look_from(guiParams.camera_theta, guiParams.camera_phi, c_relative_dist);
+            cam.look_from(guiParams.camera[0], guiParams.camera[1], c_relative_dist);
             resetRenderer();
             camera_updated = false;
             guiChanged = false;
@@ -891,10 +891,10 @@ void render(const options& opt, render_params& params, const paths& p, camera& c
 
 void mouseMove(int dx, int dy, int mouse_btn) {
     if (mouse_btn == MOUSE_LEFT) {
-        guiParams.camera_theta += -dy * c_rotation_speed;
+        guiParams.camera[0] += -dy * c_rotation_speed;
         //if (theta < delta) theta = delta;
         //if (theta > (kPI/2 - delta)) theta = kPI/2 - delta;
-        guiParams.camera_phi += -dx * c_rotation_speed;
+        guiParams.camera[1] += -dx * c_rotation_speed;
     }
     else {
         // drag with right button changes camera distance
