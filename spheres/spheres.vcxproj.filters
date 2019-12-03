@@ -60,6 +60,7 @@
     <ClInclude Include="imgui\imstb_truetype.h">
       <Filter>imgui</Filter>
     </ClInclude>
+    <ClInclude Include="math_3d.h" />
   </ItemGroup>
   <ItemGroup>
     <Filter Include="shader_tools">

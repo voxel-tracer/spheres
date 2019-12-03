@@ -107,6 +107,7 @@
     <ClInclude Include="libs\helper_cuda.h" />
     <ClInclude Include="libs\helper_cuda_gl.h" />
     <ClInclude Include="libs\helper_string.h" />
+    <ClInclude Include="math_3d.h" />
     <ClInclude Include="metrics.h" />
     <ClInclude Include="options.h" />
     <ClInclude Include="ray.h" />

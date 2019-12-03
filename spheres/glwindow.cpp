@@ -21,6 +21,9 @@
 #include "imgui/imgui_impl_glfw.h"
 #include "imgui/imgui_impl_opengl3.h"
 
+#define MATH_3D_IMPLEMENTATION
+#include "math_3d.h"
+
 // GLFW
 GLFWwindow* window;
 const int WIDTH = 512;

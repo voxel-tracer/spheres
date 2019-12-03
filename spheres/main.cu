@@ -892,8 +892,6 @@ void render(const options& opt, render_params& params, const paths& p, camera& c
 void mouseMove(int dx, int dy, int mouse_btn) {
     if (mouse_btn == MOUSE_LEFT) {
         guiParams.camera[0] += -dy * c_rotation_speed;
-        //if (theta < delta) theta = delta;
-        //if (theta > (kPI/2 - delta)) theta = kPI/2 - delta;
         guiParams.camera[1] += -dx * c_rotation_speed;
     }
     else {

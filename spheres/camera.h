@@ -5,6 +5,7 @@
 #include "ray.h"
 #include "rnd.h"
 #include "constants.h"
+#include "math_3d.h"
 
 class camera {
 public:
@@ -15,12 +16,11 @@ public:
         half_width = aspect * half_height;
         lookat = _lookat;
         focus_dist = _focus_dist;
-        vup = _vup;
         radial_distance = (lookfrom - lookat).length();
-        init(lookfrom);
+        init(lookfrom, _vup);
     }
 
-    void init(vec3 lookfrom) {
+    void init(vec3 lookfrom, vec3 vup) {
         origin = lookfrom;
         w = unit_vector(lookfrom - lookat);
         u = unit_vector(cross(vup, w));
@@ -30,15 +30,16 @@ public:
         vertical = 2 * half_height * focus_dist * v;
     }
 
-    void look_from(int theta, int phi, float relative_distance) {
+    void look_from(int xAngle, int yAngle, float relative_distance) {
         const float distance = relative_distance * radial_distance;
-        const float theta_rad = theta * kPI / 180;
-        const float phi_rad = phi * kPI / 180;
-        init(vec3(
-            distance * sinf(theta_rad) * sinf(phi_rad),
-            distance * cosf(theta_rad),
-            distance * sinf(theta_rad) * cosf(phi_rad)) + lookat
-        );
+        const float xAngleRad = xAngle * kPI / 180;
+        const float yAngleRad = yAngle * kPI / 180;
+        mat4_t mx = m4_rotation_x(xAngleRad);
+        mat4_t my = m4_rotation_y(yAngleRad);
+        mat4_t m = m4_mul(my, mx);
+        vec3_t lookFrom = m4_mul_pos(m, v3(0, 0, distance));
+        vec3_t vUp = m4_mul_dir(m, v3(0, 1, 0));
+        init(vec3(lookFrom.x, lookFrom.y, lookFrom.z), vec3(vUp.x, vUp.y, vUp.z));
     }
 
     __device__ ray get_ray(float s, float t, rand_state& local_rand_state) const {
@@ -49,7 +50,6 @@ public:
 
     vec3 lookat;
     vec3 origin;
-    vec3 vup;
     float half_width;
     float half_height;
     float focus_dist;
