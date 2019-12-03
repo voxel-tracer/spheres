@@ -233,8 +233,8 @@ bool renderImGui(GuiParams& guiParams) {
     if (ImGui::InputFloat("sky intensity", &guiParams.skyIntensity, 0.1f, 10))
         changed = true;
 
-    if (ImGui::InputInt2("camera", guiParams.camera))
-        changed = true;
+    //if (ImGui::InputInt2("camera", guiParams.camera))
+    //    changed = true;
 
     ImGui::End();
 

@@ -30,15 +30,16 @@ public:
         vertical = 2 * half_height * focus_dist * v;
     }
 
-    void look_from(int xAngle, int yAngle, float relative_distance) {
-        const float distance = relative_distance * radial_distance;
-        const float xAngleRad = xAngle * kPI / 180;
-        const float yAngleRad = yAngle * kPI / 180;
+    void update() {
+        const float distance = relative_dist * radial_distance;
+        const float xAngleRad = xDelta * kPI / 180;
+        const float yAngleRad = yDelta * kPI / 180;
         mat4_t mx = m4_rotation_x(xAngleRad);
         mat4_t my = m4_rotation_y(yAngleRad);
         mat4_t m = m4_mul(my, mx);
         vec3_t lookFrom = m4_mul_pos(m, v3(0, 0, distance));
         vec3_t vUp = m4_mul_dir(m, v3(0, 1, 0));
+
         init(vec3(lookFrom.x, lookFrom.y, lookFrom.z), vec3(vUp.x, vUp.y, vUp.z));
     }
 
@@ -58,6 +59,11 @@ public:
     vec3 vertical;
     vec3 u, v, w;
     float lens_radius;
+
+    float relative_dist = 1.0f;
+    int xDelta = 0;
+    int yDelta = 0;
+
 private:
     float radial_distance;
 };

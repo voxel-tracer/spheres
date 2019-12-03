@@ -42,8 +42,6 @@ GuiParams guiParams;
 
 // Camera controls
 camera* cam = NULL;
-float c_relative_dist = 1.0f;
-const int c_rotation_speed = 1;
 const float c_zoom_speed = 1.0f / 100;
 bool camera_updated = false;
 
@@ -710,7 +708,7 @@ void setup_camera(int nx, int ny, float dist) {
         float(nx) / float(ny),
         aperture,
         dist_to_focus);
-    cam->look_from(guiParams.camera[0], guiParams.camera[1], c_relative_dist);
+    cam->update();
 }
 
 void write_image(const char* output_file, const int nx, const int ny) {
@@ -849,7 +847,7 @@ void render(const options& opt, render_params& params, const paths& p, camera& c
 
     while (!pollWindowEvents()) {
         if (camera_updated || guiChanged) {
-            cam.look_from(guiParams.camera[0], guiParams.camera[1], c_relative_dist);
+            cam.update();
             resetRenderer();
             camera_updated = false;
             guiChanged = false;
@@ -891,15 +889,13 @@ void render(const options& opt, render_params& params, const paths& p, camera& c
 
 void mouseMove(int dx, int dy, int mouse_btn) {
     if (mouse_btn == MOUSE_LEFT) {
-        guiParams.camera[0] += -dy * c_rotation_speed;
-        guiParams.camera[1] += -dx * c_rotation_speed;
+        cam->yDelta -= dx;
+        cam->xDelta -= dy;
     }
     else {
         // drag with right button changes camera distance
         // only x movement is taken into account
-        c_relative_dist += dx * c_zoom_speed;
-        if (c_relative_dist < 0.1f)
-            c_relative_dist = 0.1f;
+        cam->relative_dist = max(0.1f, cam->relative_dist + dx * c_zoom_speed);
     }
     camera_updated = true;
 }

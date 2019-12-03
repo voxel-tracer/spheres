@@ -16,7 +16,7 @@ struct GuiParams {
     float skyColor[3] = { 1, 1, 1 };
     float skyIntensity = 0.2f;
 
-    int camera[2] = { 80, 45 };
+    //int camera[2] = { 80, 45 }; TODO we need to expose both cam.lookFrom and cam.vUp to the UI if we want to consistently reproduce a specific view
 };
 
 void initWindow(int argc, char* argv[], int width, int height, unsigned int** _cuda_dev_render_buffer);
