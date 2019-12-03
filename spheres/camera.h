@@ -31,16 +31,24 @@ public:
     }
 
     void update() {
-        const float distance = relative_dist * radial_distance;
+        // compute delta angles in radians
         const float xAngleRad = xDelta * kPI / 180;
         const float yAngleRad = yDelta * kPI / 180;
-        mat4_t mx = m4_rotation_x(xAngleRad);
-        mat4_t my = m4_rotation_y(yAngleRad);
-        mat4_t m = m4_mul(my, mx);
-        vec3_t lookFrom = m4_mul_pos(m, v3(0, 0, distance));
-        vec3_t vUp = m4_mul_dir(m, v3(0, 1, 0));
-
+        // use current viewMat to transform rotation axis
+        const vec3_t xAxis = m4_mul_dir(viewMat, v3(1, 0, 0));
+        const vec3_t yAxis = m4_mul_dir(viewMat, v3(0, 1, 0));
+        // compute delta transformation matrix
+        const mat4_t mx = m4_rotation(xAngleRad, xAxis);
+        const mat4_t my = m4_rotation(yAngleRad, yAxis);
+        const mat4_t m = m4_mul(my, mx);
+        // update viewMat
+        viewMat = m4_mul(m, viewMat);
+        // compute new camera's lookFrom, vUp
+        vec3_t lookFrom = m4_mul_pos(viewMat, v3(0, 0, relative_dist * radial_distance));
+        vec3_t vUp = m4_mul_dir(viewMat, v3(0, 1, 0));
         init(vec3(lookFrom.x, lookFrom.y, lookFrom.z), vec3(vUp.x, vUp.y, vUp.z));
+
+        xDelta = yDelta = 0;
     }
 
     __device__ ray get_ray(float s, float t, rand_state& local_rand_state) const {
@@ -63,9 +71,9 @@ public:
     float relative_dist = 1.0f;
     int xDelta = 0;
     int yDelta = 0;
-
 private:
     float radial_distance;
+    mat4_t viewMat = m4_identity();
 };
 
 #endif

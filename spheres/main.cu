@@ -889,8 +889,8 @@ void render(const options& opt, render_params& params, const paths& p, camera& c
 
 void mouseMove(int dx, int dy, int mouse_btn) {
     if (mouse_btn == MOUSE_LEFT) {
-        cam->yDelta -= dx;
-        cam->xDelta -= dy;
+        cam->yDelta = -dx;
+        cam->xDelta = -dy;
     }
     else {
         // drag with right button changes camera distance
