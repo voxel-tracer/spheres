@@ -140,8 +140,8 @@ void mouseCursorPosFunc(GLFWwindow* window, double xpos, double ypos) {
     if (!w_mouseMoveFunc || ImGui::GetIO().WantCaptureMouse)
         return;
     
-    if (w_mouse_left_btn || w_mouse_right_btn)
-        w_mouseMoveFunc(w_mouse_x - xpos, w_mouse_y - ypos, w_mouse_left_btn ? MOUSE_LEFT : MOUSE_RIGHT);
+    int code = w_mouse_left_btn ? MOUSE_LEFT : (w_mouse_right_btn ? MOUSE_RIGHT : NO_MOUSE);
+    w_mouseMoveFunc(w_mouse_x - xpos, w_mouse_y - ypos, code);
 
     w_mouse_x = xpos;
     w_mouse_y = ypos;
@@ -157,6 +157,7 @@ void mouseButtonFunc(GLFWwindow* window, int button, int action, int mods) {
     }
     else if (action == GLFW_RELEASE) {
         w_mouse_left_btn = w_mouse_right_btn = false;
+        w_mouseMoveFunc(0, 0, NO_MOUSE);
     }
 }
 

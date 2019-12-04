@@ -40,6 +40,8 @@ unsigned int* d_cuda_render_buffer;
 
 GuiParams guiParams;
 
+bool r_preview = false;
+
 // Camera controls
 camera* cam = NULL;
 const float c_zoom_speed = 1.0f / 100;
@@ -60,6 +62,8 @@ struct render_params {
     vec3 lightColor;
 
     vec3 skyColor;
+
+    bool preview;
 };
 
 typedef enum pathstate {
@@ -586,7 +590,20 @@ __global__ void update(const render_params params, paths p) {
     unsigned short bounce = p.bounce[pid];
 
     // did the ray hit a primitive ?
-    if (pstate == HIT || pstate == HIT_AND_LIGHT) {
+    if (params.preview) {
+        // in preview mode, just use the primitive color
+        if (pstate == HIT) {
+            const int hit_id = p.hit_id[pid];
+            int clr_idx = params.colors[hit_id] * 3;
+            const vec3 albedo = vec3(d_colormap[clr_idx++], d_colormap[clr_idx++], d_colormap[clr_idx++]);
+
+            const unsigned int pixel_id = p.active_paths[pid];
+            atomicAdd(params.fb[pixel_id].e, albedo.e[0]);
+            atomicAdd(params.fb[pixel_id].e + 1, albedo.e[1]);
+            atomicAdd(params.fb[pixel_id].e + 2, albedo.e[2]);
+        }
+        pstate == DONE;
+    } else if (pstate == HIT || pstate == HIT_AND_LIGHT) {
         // update path attenuation
         const int hit_id = p.hit_id[pid];
         int clr_idx = params.colors[hit_id] * 3;
@@ -844,40 +861,48 @@ void render(const options& opt, render_params& params, const paths& p, camera& c
     bool lightEnabled = true;
     clock_t start = clock();
     cudaProfilerStart();
+    bool render = true;
 
     while (!pollWindowEvents()) {
-        if (camera_updated || guiChanged) {
+        if (camera_updated || guiChanged || params.preview != r_preview) {
+            params.preview = r_preview;
             cam.update();
             resetRenderer();
             camera_updated = false;
             guiChanged = false;
+            render = true;
 
-            params.maxBounces = guiParams.maxBounces;
+            params.maxBounces = r_preview ? 1 : guiParams.maxBounces;
             params.lightRadius = guiParams.lightRadius;
             params.lightColor = vec3(guiParams.lightColor[0], guiParams.lightColor[1], guiParams.lightColor[2]) * guiParams.lightIntensity;
-            lightEnabled = guiParams.lightIntensity > 0;
+            lightEnabled = !r_preview && guiParams.lightIntensity > 0;
             params.skyColor = vec3(guiParams.skyColor[0], guiParams.skyColor[1], guiParams.skyColor[2]) * guiParams.skyIntensity;
         }
 
-        renderIteration(opt, params, p, cam, r_iteration, lightEnabled);
+        if (render) {
+            renderIteration(opt, params, p, cam, r_iteration, lightEnabled);
 
-        {
-            const int threads = 128;
-            const int blocks = (params.width * params.height + threads - 1) / threads;
-            copyToUintBuffer <<< blocks, threads >>> (params, p.numsamples_perpixel, d_cuda_render_buffer);
+            {
+                const int threads = 128;
+                const int blocks = (params.width * params.height + threads - 1) / threads;
+                copyToUintBuffer << < blocks, threads >> > (params, p.numsamples_perpixel, d_cuda_render_buffer);
 
-            updateWindow(guiParams, guiChanged);
+                updateWindow(guiParams, guiChanged);
+            }
+
+            // print metrics
+            if (opt.verbose) {
+                print_metrics << < 1, 1 >> > (p.m, r_iteration, opt.maxActivePaths, (float)(clock() - start) / CLOCKS_PER_SEC, false);
+                checkCudaErrors(cudaGetLastError());
+            }
+
+            r_iteration++;
+            if (!r_preview && r_iteration > 0 && !(r_iteration % 100))
+                write_image("temp_save.png", params.width, params.height);
+            
+            if (r_preview)
+                render = !render;
         }
-
-        // print metrics
-        if (opt.verbose) {
-            print_metrics <<< 1, 1 >>> (p.m, r_iteration, opt.maxActivePaths, (float)(clock() - start) / CLOCKS_PER_SEC, false);
-            checkCudaErrors(cudaGetLastError());
-        }
-
-        r_iteration++;
-        if (r_iteration > 0 && !(r_iteration % 100))
-            write_image("temp_save.png", params.width, params.height);
     }
     cudaProfilerStop();
 
@@ -888,16 +913,22 @@ void render(const options& opt, render_params& params, const paths& p, camera& c
 }
 
 void mouseMove(int dx, int dy, int mouse_btn) {
+    camera_updated = true;
     if (mouse_btn == MOUSE_LEFT) {
         cam->yDelta = -dx;
         cam->xDelta = -dy;
+        r_preview = true;
     }
-    else {
+    else if (mouse_btn == MOUSE_RIGHT) {
         // drag with right button changes camera distance
         // only x movement is taken into account
         cam->relative_dist = max(0.1f, cam->relative_dist + dx * c_zoom_speed);
+        r_preview = true;
     }
-    camera_updated = true;
+    else {
+        camera_updated = false;
+        r_preview = false;
+    }
 }
 
 int main(int argc, char** argv) {

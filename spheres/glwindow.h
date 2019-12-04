@@ -2,6 +2,7 @@
 
 #define MOUSE_LEFT  0
 #define MOUSE_RIGHT 1
+#define NO_MOUSE    2
 
 typedef void(*GLMouseMoveFunc) (int, int, int);
 
