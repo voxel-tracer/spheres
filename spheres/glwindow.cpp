@@ -41,19 +41,8 @@ GLuint VBO, VAO, EBO;
 GLSLShader drawtex_f; // GLSL fragment shader
 GLSLShader drawtex_v; // GLSL fragment shader
 GLSLProgram shdrawtex; // GLSLS program for textured draw
-// Texture size
-int t_width;
-int t_height;
 
 // Cuda <-> OpenGl interop resources
-void* cuda_dev_render_buffer; // Cuda buffer for initial render
-struct cudaGraphicsResource* cuda_tex_resource;
-GLuint opengl_tex_cuda;  // OpenGL Texture for cuda result
-
-// CUDA
-size_t size_tex_data;
-unsigned int num_texels;
-unsigned int num_values;
 
 static const char* glsl_drawtex_vertshader_src =
 "#version 330 core\n"
@@ -98,33 +87,53 @@ GLuint indices[] = {  // Note that we start from 0!
 };
 
 // Create 2D OpenGL texture in gl_tex and bind it to CUDA in cuda_tex
-void createGLTextureForCUDA(GLuint* gl_tex, cudaGraphicsResource** cuda_tex, unsigned int size_x, unsigned int size_y)
+void createGLTextureForCUDA(CudaGLContext* context)
 {
     // create an OpenGL texture
-    glGenTextures(1, gl_tex); // generate 1 texture
-    glBindTexture(GL_TEXTURE_2D, *gl_tex); // set it as current target
+    glGenTextures(1, &context->opengl_tex_cuda); // generate 1 texture
+    glBindTexture(GL_TEXTURE_2D, context->opengl_tex_cuda); // set it as current target
     // set basic texture parameters
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE); // clamp s coordinate
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE); // clamp t coordinate
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     // Specify 2D texture
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8UI_EXT, size_x, size_y, 0, GL_RGBA_INTEGER_EXT, GL_UNSIGNED_BYTE, NULL);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8UI_EXT, context->t_width, context->t_height, 0, GL_RGBA_INTEGER_EXT, GL_UNSIGNED_BYTE, NULL);
     // Register this texture with CUDA
-    checkCudaErrors(cudaGraphicsGLRegisterImage(cuda_tex, *gl_tex, GL_TEXTURE_2D, cudaGraphicsRegisterFlagsWriteDiscard));
+    checkCudaErrors(cudaGraphicsGLRegisterImage(
+        (cudaGraphicsResource**)&context->cuda_tex_resource, context->opengl_tex_cuda, GL_TEXTURE_2D, cudaGraphicsRegisterFlagsWriteDiscard));
     SDK_CHECK_ERROR_GL();
 }
 
 void initGLBuffers()
 {
-    // create texture that will receive the result of cuda kernel
-    createGLTextureForCUDA(&opengl_tex_cuda, &cuda_tex_resource, t_width, t_height);
     // create shader program
     drawtex_v = GLSLShader("Textured draw vertex shader", glsl_drawtex_vertshader_src, GL_VERTEX_SHADER);
     drawtex_f = GLSLShader("Textured draw fragment shader", glsl_drawtex_fragshader_src, GL_FRAGMENT_SHADER);
     shdrawtex = GLSLProgram(&drawtex_v, &drawtex_f);
     shdrawtex.compile();
     SDK_CHECK_ERROR_GL();
+}
+
+void initCUDABuffers(CudaGLContext* context)
+{
+    // set up vertex data parameters
+    int num_texels = context->t_height * context->t_width;
+    int num_values = num_texels * 4;
+    size_t size_tex_data = sizeof(GLubyte) * num_values;
+    // We don't want to use cudaMallocManaged here - since we definitely want
+    checkCudaErrors(cudaMalloc(&context->cuda_dev_render_buffer, size_tex_data)); // Allocate CUDA memory for color output
+}
+
+CudaGLContext* setupCudaGl(unsigned int width, unsigned int height) {
+    CudaGLContext* context = new CudaGLContext();
+    context->t_width = width;
+    context->t_height = height;
+
+    initCUDABuffers(context);
+    createGLTextureForCUDA(context);
+
+    return context;
 }
 
 // Keyboard
@@ -174,17 +183,6 @@ bool initGL() {
     return true;
 }
 
-void initCUDABuffers(unsigned int ** _cuda_dev_render_buffer)
-{
-    // set up vertex data parameters
-    num_texels = t_width * t_height;
-    num_values = num_texels * 4;
-    size_tex_data = sizeof(GLubyte) * num_values;
-    // We don't want to use cudaMallocManaged here - since we definitely want
-    checkCudaErrors(cudaMalloc(&cuda_dev_render_buffer, size_tex_data)); // Allocate CUDA memory for color output
-    *_cuda_dev_render_buffer = (unsigned int*)cuda_dev_render_buffer;
-}
-
 bool initGLFW() {
     if (!glfwInit()) exit(EXIT_FAILURE);
     // These hints switch the OpenGL profile to core
@@ -202,19 +200,19 @@ bool initGLFW() {
     return true;
 }
 
-void copyCUDAImageToTexture()
+void copyCUDAImageToTexture(CudaGLContext* context)
 {
     // We want to copy cuda_dev_render_buffer data to the texture
     // Map buffer objects to get CUDA device pointers
     cudaArray* texture_ptr;
-    checkCudaErrors(cudaGraphicsMapResources(1, &cuda_tex_resource, 0));
-    checkCudaErrors(cudaGraphicsSubResourceGetMappedArray(&texture_ptr, cuda_tex_resource, 0, 0));
+    checkCudaErrors(cudaGraphicsMapResources(1, (cudaGraphicsResource**)&context->cuda_tex_resource, 0));
+    checkCudaErrors(cudaGraphicsSubResourceGetMappedArray(&texture_ptr, (cudaGraphicsResource*)context->cuda_tex_resource, 0, 0));
 
-    int num_texels = t_width * t_height;
+    int num_texels = context->t_width * context->t_height;
     int num_values = num_texels * 4;
     int size_tex_data = sizeof(GLubyte) * num_values;
-    checkCudaErrors(cudaMemcpyToArray(texture_ptr, 0, 0, cuda_dev_render_buffer, size_tex_data, cudaMemcpyDeviceToDevice));
-    checkCudaErrors(cudaGraphicsUnmapResources(1, &cuda_tex_resource, 0));
+    checkCudaErrors(cudaMemcpyToArray(texture_ptr, 0, 0, context->cuda_dev_render_buffer, size_tex_data, cudaMemcpyDeviceToDevice));
+    checkCudaErrors(cudaGraphicsUnmapResources(1, (cudaGraphicsResource**)&context->cuda_tex_resource, 0));
 }
 
 bool renderImGui(GuiParams& guiParams) {
@@ -243,8 +241,9 @@ bool renderImGui(GuiParams& guiParams) {
 }
 
 // call this after the CUDA kernel is done updating 
-void updateWindow(GuiParams& guiParams, bool& paramsChanged) {
-    copyCUDAImageToTexture();
+void updateWindow(CudaGLContext *context, GuiParams& guiParams, bool& paramsChanged) {
+
+    copyCUDAImageToTexture(context);
     glfwPollEvents();
     // Clear the color buffer
     glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
@@ -256,7 +255,7 @@ void updateWindow(GuiParams& guiParams, bool& paramsChanged) {
     ImGui::NewFrame();
 
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, opengl_tex_cuda);
+    glBindTexture(GL_TEXTURE_2D, context->opengl_tex_cuda);
 
     shdrawtex.use(); // we gonna use this compiled GLSL program
     glUniform1i(glGetUniformLocation(shdrawtex.program, "tex"), 0);
@@ -289,16 +288,12 @@ void initImGui() {
     ImGui::StyleColorsDark();
 }
 
-void initWindow(int argc, char* argv[], int width, int height, unsigned int** _cuda_dev_render_buffer) {
-    t_width = width;
-    t_height = height;
+void initWindow() {
 
     initGLFW();
     initGL();
 
-    findCudaGLDevice(argc, (const char**)argv);
     initGLBuffers();
-    initCUDABuffers(_cuda_dev_render_buffer);
 
     // Generate buffers
     glGenVertexArrays(1, &VAO);
@@ -349,10 +344,14 @@ void destroyImGui() {
     ImGui::DestroyContext();
 }
 
+void destroyContext(CudaGLContext* context) {
+    checkCudaErrors(cudaFree(context->cuda_dev_render_buffer));
+    delete context;
+}
+
 void destroyWindow() {
     destroyImGui();
 
     glfwDestroyWindow(window);
     glfwTerminate();
-    checkCudaErrors(cudaFree(cuda_dev_render_buffer));
 }

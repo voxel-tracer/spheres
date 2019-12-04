@@ -36,9 +36,10 @@ float* d_bvh_buf;
 float* d_spheres_buf;
 vec3* d_fb;
 int* d_colors;
-unsigned int* d_cuda_render_buffer;
 
 GuiParams guiParams;
+
+CudaGLContext* render_context;
 
 bool r_preview = false;
 
@@ -728,19 +729,20 @@ void setup_camera(int nx, int ny, float dist) {
     cam->update();
 }
 
-void write_image(const char* output_file, const int nx, const int ny) {
-    unsigned int* idata = new unsigned int[nx * ny];
-    checkCudaErrors(cudaMemcpy(idata, d_cuda_render_buffer, nx * ny * sizeof(unsigned int), cudaMemcpyDeviceToHost));
+void write_image(const char* output_file, CudaGLContext *context) {
+    const unsigned int numPixels = context->t_height * context->t_width;
+    unsigned int* idata = new unsigned int[numPixels];
+    checkCudaErrors(cudaMemcpy(idata, context->cuda_dev_render_buffer, numPixels * sizeof(unsigned int), cudaMemcpyDeviceToHost));
 
-    char* data = new char[nx * ny * 3];
+    char* data = new char[numPixels * 3];
     int idx = 0;
-    for (size_t i = 0; i < nx * ny; i++) {
+    for (size_t i = 0; i < numPixels; i++) {
         unsigned int pixel = idata[i];
         data[idx++] = pixel & 0xFF;
         data[idx++] = (pixel & 0xFF00) >> 8;
         data[idx++] = (pixel & 0xFF0000) >> 16;
     }
-    stbi_write_png(output_file, nx, ny, 3, (void*)data, nx * 3);
+    stbi_write_png(output_file, context->t_width, context->t_height, 3, (void*)data, context->t_width * 3);
 
     delete[] idata;
     delete[] data;
@@ -885,9 +887,9 @@ void render(const options& opt, render_params& params, const paths& p, camera& c
             {
                 const int threads = 128;
                 const int blocks = (params.width * params.height + threads - 1) / threads;
-                copyToUintBuffer << < blocks, threads >> > (params, p.numsamples_perpixel, d_cuda_render_buffer);
+                copyToUintBuffer << < blocks, threads >> > (params, p.numsamples_perpixel, (unsigned int*)render_context->cuda_dev_render_buffer);
 
-                updateWindow(guiParams, guiChanged);
+                updateWindow(render_context, guiParams, guiChanged);
             }
 
             // print metrics
@@ -898,7 +900,7 @@ void render(const options& opt, render_params& params, const paths& p, camera& c
 
             r_iteration++;
             if (!r_preview && r_iteration > 0 && !(r_iteration % 100))
-                write_image("temp_save.png", params.width, params.height);
+                write_image("temp_save.png", render_context);
             
             if (r_preview)
                 render = !render;
@@ -936,7 +938,9 @@ int main(int argc, char** argv) {
     if (!parse_args(argc, argv, opt))
         return -1;
 
-    initWindow(argc, argv, opt.nx, opt.ny, &d_cuda_render_buffer);
+    initWindow();
+    render_context = setupCudaGl(opt.nx, opt.ny);
+
     registerMouseMoveFunc(mouseMove);
 
     initCuda(opt);
@@ -959,7 +963,7 @@ int main(int argc, char** argv) {
 
     char imagename[100];
     sprintf(imagename, "%s_%dx%dx%d_%d_bvh.png", opt.input, opt.nx, opt.ny, opt.ns, opt.dist);
-    write_image(imagename, opt.nx, opt.ny);
+    write_image(imagename, render_context);
 
     // clean up
     destroyWindow();
@@ -971,6 +975,7 @@ int main(int argc, char** argv) {
     checkCudaErrors(cudaDeviceSynchronize());
     checkCudaErrors(cudaGetLastError());
     checkCudaErrors(cudaFree(params.fb));
+    destroyContext(render_context);
 
     cudaDeviceReset();
 }
