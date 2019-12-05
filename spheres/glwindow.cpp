@@ -86,25 +86,6 @@ GLuint indices[] = {  // Note that we start from 0!
     1, 2, 3   // Second Triangle
 };
 
-// Create 2D OpenGL texture in gl_tex and bind it to CUDA in cuda_tex
-void createGLTextureForCUDA(CudaGLContext* context)
-{
-    // create an OpenGL texture
-    glGenTextures(1, &context->opengl_tex_cuda); // generate 1 texture
-    glBindTexture(GL_TEXTURE_2D, context->opengl_tex_cuda); // set it as current target
-    // set basic texture parameters
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE); // clamp s coordinate
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE); // clamp t coordinate
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    // Specify 2D texture
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8UI_EXT, context->t_width, context->t_height, 0, GL_RGBA_INTEGER_EXT, GL_UNSIGNED_BYTE, NULL);
-    // Register this texture with CUDA
-    checkCudaErrors(cudaGraphicsGLRegisterImage(
-        (cudaGraphicsResource**)&context->cuda_tex_resource, context->opengl_tex_cuda, GL_TEXTURE_2D, cudaGraphicsRegisterFlagsWriteDiscard));
-    SDK_CHECK_ERROR_GL();
-}
-
 void initGLBuffers()
 {
     // create shader program
@@ -115,25 +96,40 @@ void initGLBuffers()
     SDK_CHECK_ERROR_GL();
 }
 
-void initCUDABuffers(CudaGLContext* context)
-{
+CudaGLContext::CudaGLContext(int width, int height) :t_width(width), t_height(height) {
+    initCUDABuffers();
+    initGLTextureForCUDA();
+}
+
+CudaGLContext::~CudaGLContext() {
+    checkCudaErrors(cudaFree(cuda_dev_render_buffer));
+}
+
+void CudaGLContext::initCUDABuffers() {
     // set up vertex data parameters
-    int num_texels = context->t_height * context->t_width;
+    int num_texels = t_height * t_width;
     int num_values = num_texels * 4;
     size_t size_tex_data = sizeof(GLubyte) * num_values;
     // We don't want to use cudaMallocManaged here - since we definitely want
-    checkCudaErrors(cudaMalloc(&context->cuda_dev_render_buffer, size_tex_data)); // Allocate CUDA memory for color output
+    checkCudaErrors(cudaMalloc(&cuda_dev_render_buffer, size_tex_data)); // Allocate CUDA memory for color output
 }
 
-CudaGLContext* setupCudaGl(unsigned int width, unsigned int height) {
-    CudaGLContext* context = new CudaGLContext();
-    context->t_width = width;
-    context->t_height = height;
-
-    initCUDABuffers(context);
-    createGLTextureForCUDA(context);
-
-    return context;
+// Create 2D OpenGL texture in gl_tex and bind it to CUDA in cuda_tex
+void CudaGLContext::initGLTextureForCUDA() {
+    // create an OpenGL texture
+    glGenTextures(1, &opengl_tex_cuda); // generate 1 texture
+    glBindTexture(GL_TEXTURE_2D, opengl_tex_cuda); // set it as current target
+    // set basic texture parameters
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE); // clamp s coordinate
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE); // clamp t coordinate
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    // Specify 2D texture
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8UI_EXT, t_width, t_height, 0, GL_RGBA_INTEGER_EXT, GL_UNSIGNED_BYTE, NULL);
+    // Register this texture with CUDA
+    checkCudaErrors(cudaGraphicsGLRegisterImage(
+        (cudaGraphicsResource**)&cuda_tex_resource, opengl_tex_cuda, GL_TEXTURE_2D, cudaGraphicsRegisterFlagsWriteDiscard));
+    SDK_CHECK_ERROR_GL();
 }
 
 // Keyboard
@@ -342,11 +338,6 @@ void destroyImGui() {
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
-}
-
-void destroyContext(CudaGLContext* context) {
-    checkCudaErrors(cudaFree(context->cuda_dev_render_buffer));
-    delete context;
 }
 
 void destroyWindow() {

@@ -25,6 +25,9 @@ using namespace std;
 const int MaxBlockWidth = 32;
 const int MaxBlockHeight = 2; // block width is 32
 
+const unsigned int PREVIEW_WIDTH = 512;
+const unsigned int PREVIEW_HEIGHT = 512;
+
 typedef unsigned long long ull;
 
 __device__ __constant__ float d_colormap[256 * 3];
@@ -40,7 +43,7 @@ int* d_colors;
 GuiParams guiParams;
 
 CudaGLContext* render_context;
-
+CudaGLContext* preview_context;
 bool r_preview = false;
 
 // Camera controls
@@ -51,8 +54,8 @@ bool camera_updated = false;
 struct render_params {
     vec3* fb;
     int leaf_offset;
-    unsigned int width;
-    unsigned int height;
+    unsigned int _width;
+    unsigned int _height;
     unsigned int spp;
     unsigned int maxActivePaths;
 
@@ -65,6 +68,13 @@ struct render_params {
     vec3 skyColor;
 
     bool preview;
+
+    __host__ __device__ unsigned int width() const {
+        return preview ? PREVIEW_WIDTH : _width;
+    }
+    __host__ __device__ unsigned int height() const {
+        return preview ? PREVIEW_HEIGHT : _height;
+    }
 };
 
 typedef enum pathstate {
@@ -192,17 +202,17 @@ __global__ void fetch_samples(const render_params params, paths p, bool first, c
         //    return; // no more samples to fetch
 
         // retrieve pixel_id corresponding to current path
-        const unsigned int pixel_id = (sample_id / params.spp) % (params.width * params.height);
+        const unsigned int pixel_id = (sample_id / params.spp) % (params.width() * params.height());
         p.active_paths[pid] = pixel_id;
         atomicAdd(p.numsamples_perpixel + pixel_id, 1);
 
         // compute pixel coordinates
-        const unsigned int x = pixel_id % params.width;
-        const unsigned int y = pixel_id / params.width;
+        const unsigned int x = pixel_id % params.width();
+        const unsigned int y = pixel_id / params.width();
 
         // generate camera ray
-        float u = float(x + random_float(state)) / float(params.width);
-        float v = float(y + random_float(state)) / float(params.height);
+        float u = float(x + random_float(state)) / float(params.width());
+        float v = float(y + random_float(state)) / float(params.height());
         p.r[pid] = cam.get_ray(u, v, state);
         p.state[pid] = state;
         p.attentuation[pid] = vec3(1, 1, 1);
@@ -568,7 +578,7 @@ __device__ int rgbToInt(float r, float g, float b)
 
 __global__ void copyToUintBuffer(const render_params params, ull* numsamples_perpixel, unsigned int* uint_render_buffer) {
     const unsigned int pixel_id = threadIdx.x + blockIdx.x * blockDim.x;
-    if (pixel_id >= (params.width * params.height))
+    if (pixel_id >= (params.width() * params.height()))
         return;
     const vec3 pixel = params.fb[pixel_id];
     const ull spp = numsamples_perpixel[pixel_id];
@@ -799,8 +809,8 @@ render_params setupRenderParams(options opt, int bvh_size) {
     params.fb = d_fb;
     params.leaf_offset = bvh_size / 2;
     params.colors = d_colors;
-    params.width = opt.nx;
-    params.height = opt.ny;
+    params._width = opt.nx;
+    params._height = opt.ny;
     params.spp = opt.ns;
     params.maxActivePaths = opt.maxActivePaths;
     return params;
@@ -886,10 +896,11 @@ void render(const options& opt, render_params& params, const paths& p, camera& c
 
             {
                 const int threads = 128;
-                const int blocks = (params.width * params.height + threads - 1) / threads;
-                copyToUintBuffer << < blocks, threads >> > (params, p.numsamples_perpixel, (unsigned int*)render_context->cuda_dev_render_buffer);
+                const int blocks = (params.width() * params.height() + threads - 1) / threads;
+                CudaGLContext* context = r_preview ? preview_context : render_context;
+                copyToUintBuffer << < blocks, threads >> > (params, p.numsamples_perpixel, (unsigned int*)context->cuda_dev_render_buffer);
 
-                updateWindow(render_context, guiParams, guiChanged);
+                updateWindow(context, guiParams, guiChanged);
             }
 
             // print metrics
@@ -939,7 +950,8 @@ int main(int argc, char** argv) {
         return -1;
 
     initWindow();
-    render_context = setupCudaGl(opt.nx, opt.ny);
+    render_context = new CudaGLContext(opt.nx, opt.ny);
+    preview_context = new CudaGLContext(512, 512);
 
     registerMouseMoveFunc(mouseMove);
 
@@ -975,7 +987,8 @@ int main(int argc, char** argv) {
     checkCudaErrors(cudaDeviceSynchronize());
     checkCudaErrors(cudaGetLastError());
     checkCudaErrors(cudaFree(params.fb));
-    destroyContext(render_context);
+    delete render_context;
+    delete preview_context;
 
     cudaDeviceReset();
 }

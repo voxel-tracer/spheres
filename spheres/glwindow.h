@@ -20,7 +20,8 @@ struct GuiParams {
     //int camera[2] = { 80, 45 }; TODO we need to expose both cam.lookFrom and cam.vUp to the UI if we want to consistently reproduce a specific view
 };
 
-struct CudaGLContext {
+class CudaGLContext {
+public:
     void* cuda_dev_render_buffer; // Cuda buffer for initial render
     void* cuda_tex_resource;
     unsigned int opengl_tex_cuda;  // OpenGL Texture for cuda result
@@ -28,6 +29,13 @@ struct CudaGLContext {
     // Texture size
     int t_width;
     int t_height;
+
+    CudaGLContext(int width, int height);
+    ~CudaGLContext();
+
+private:
+    void initCUDABuffers();
+    void initGLTextureForCUDA();
 };
 
 void initWindow();
@@ -35,6 +43,3 @@ void registerMouseMoveFunc(GLMouseMoveFunc func);
 void updateWindow(CudaGLContext *context, GuiParams& guiParams, bool& paramsChanged);
 bool pollWindowEvents();
 void destroyWindow();
-
-CudaGLContext* setupCudaGl(unsigned int width, unsigned int height);
-void destroyContext(CudaGLContext* context);
