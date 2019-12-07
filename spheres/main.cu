@@ -20,39 +20,27 @@ using namespace std;
 
 #include "glwindow.h"
 
+typedef unsigned long long ull;
+
+// ---- constants ----
+
 #define DYNAMIC_FETCH_THRESHOLD 20          // If fewer than this active, fetch new rays
 
-const int MaxBlockWidth = 32;
-const int MaxBlockHeight = 2; // block width is 32
+const int TRAVERSAL_MAX_BLOCK_WIDTH = 32;
+const int TRAVERSAL_MAX_BLOCK_HEIGHT = 2; // block width is 32
 
 const unsigned int PREVIEW_WIDTH = 512;
 const unsigned int PREVIEW_HEIGHT = 512;
 
-typedef unsigned long long ull;
+// ---- constant memory ----
 
 __device__ __constant__ float d_colormap[256 * 3];
 __device__ __constant__ bvh_node d_nodes[2048];
 
-texture<float4> t_bvh;
-texture<float> t_spheres;
-float* d_bvh_buf;
-float* d_spheres_buf;
-vec3* d_fb;
-int* d_colors;
+// ---- kernel parameters ----
 
-GuiParams guiParams;
-
-CudaGLContext* render_context;
-CudaGLContext* preview_context;
-bool r_preview = false;
-
-// Camera controls
-camera* cam = NULL;
-const float c_zoom_speed = 1.0f / 100;
-bool camera_updated = false;
-
+// Consolidate this with RenderContext, leave params that change between preview/render
 struct render_params {
-    vec3* fb;
     int leaf_offset;
     unsigned int _width;
     unsigned int _height;
@@ -86,14 +74,9 @@ typedef enum pathstate {
     HIT_AND_LIGHT  // path hit a primitive and its shadow ray didn't hit any primitive
 } pathstate;
 
+// Structure of Arrays that has all the informations we need per path
+// we have one value per path in each array for a total of maxActivePaths
 struct paths {
-    ull* next_sample; // used by init() to track next sample to fetch
-    ull* numsamples_perpixel; // how many samples have been traced per pixel so far
-
-    // pixel_id of active paths currently being traced by the renderer, it's a subset of all_sample_pool
-    unsigned int* active_paths;
-    unsigned int* next_path; // used by hit_bvh() to track next path to fetch and trace
-
     ray* r;
     ray* shadow;
     rand_state* state;
@@ -105,37 +88,91 @@ struct paths {
     vec3* hit_normal;
     float* hit_t;
 
-    metrics m;
+    // pixel_id of active paths currently being traced by the renderer, it's a subset of all_sample_pool
+    unsigned int* active_paths; // TODO rename this to pixelId
 };
 
-// Renderer
-unsigned int r_iteration = 0;
-unsigned int r_num_pixels = 0;
-paths* r_paths = NULL;
+// TODO move what I can from these to RenderContext
+texture<float4> t_bvh;
+texture<float> t_spheres;
+float* d_bvh_buf;
+float* d_spheres_buf;
+int* d_colors;
 
-void setup_paths(paths& p, int nx, int ny, int ns, unsigned int maxActivePaths) {
+class RenderContext {
+private:
+    const unsigned int numPixels;
+
+public:
+    paths paths;
+
+    ull* next_sample; // used by init() to track next sample to fetch
+    ull* numsamples_perpixel; // how many samples have been traced per pixel so far
+
+    unsigned int* next_path; // used by hit_bvh() to track next path to fetch and trace
+
+    vec3* output_buffer;
+    metrics m;
+
+    unsigned int iteration = 0;
+
+    RenderContext(unsigned int _numPixels) :numPixels(_numPixels) {
+        checkCudaErrors(cudaMalloc((void**)&next_path, sizeof(unsigned int)));
+        checkCudaErrors(cudaMalloc((void**)&next_sample, sizeof(ull)));
+        checkCudaErrors(cudaMalloc((void**)&numsamples_perpixel, numPixels * sizeof(ull)));
+
+        checkCudaErrors(cudaMalloc((void**)&output_buffer, numPixels * sizeof(vec3)));
+
+        m.allocateDeviceMem();
+
+        resetRenderer();
+    }
+
+    void freeDeviceMem() {
+        checkCudaErrors(cudaFree(next_sample));
+        checkCudaErrors(cudaFree(next_path));
+        checkCudaErrors(cudaFree(numsamples_perpixel));
+        checkCudaErrors(cudaFree(output_buffer));
+
+        m.freeDeviceMem();
+    }
+
+    void resetRenderer() {
+        iteration = 0;
+        checkCudaErrors(cudaMemset(output_buffer, 0, numPixels * sizeof(vec3)));
+        checkCudaErrors(cudaMemset((void*)next_sample, 0, sizeof(ull)));
+        checkCudaErrors(cudaMemset((void*)numsamples_perpixel, 0, numPixels * sizeof(ull)));
+        checkCudaErrors(cudaMemset(output_buffer, 0, numPixels * sizeof(vec3)));
+    }
+};
+
+// ---- UI ----
+
+GuiParams guiParams;
+
+CudaGLContext* render_context;
+CudaGLContext* preview_context;
+bool r_preview = false;
+
+// ---- Camera controls ----
+
+camera* cam = NULL;
+const float c_zoom_speed = 1.0f / 100;
+bool camera_updated = false;
+
+void setup_paths(paths& p, unsigned int maxActivePaths) {
     // at any given moment only kMaxActivePaths at most are active at the same time
-    const unsigned num_paths = maxActivePaths;
-    checkCudaErrors(cudaMalloc((void**)& p.r, num_paths * sizeof(ray)));
-    checkCudaErrors(cudaMalloc((void**)& p.shadow, num_paths * sizeof(ray)));
-    checkCudaErrors(cudaMalloc((void**)& p.state, num_paths * sizeof(rand_state)));
-    checkCudaErrors(cudaMalloc((void**)& p.attentuation, num_paths * sizeof(vec3)));
-    checkCudaErrors(cudaMalloc((void**)& p.emitted, num_paths * sizeof(vec3)));
-    checkCudaErrors(cudaMalloc((void**)& p.bounce, num_paths * sizeof(unsigned short)));
-    checkCudaErrors(cudaMalloc((void**)& p.pstate, num_paths * sizeof(pathstate)));
-    checkCudaErrors(cudaMalloc((void**)& p.hit_id, num_paths * sizeof(int)));
-    checkCudaErrors(cudaMalloc((void**)& p.hit_normal, num_paths * sizeof(vec3)));
-    checkCudaErrors(cudaMalloc((void**)& p.hit_t, num_paths * sizeof(float)));
-
-    checkCudaErrors(cudaMalloc((void**)& p.active_paths, num_paths * sizeof(unsigned int)));
-    checkCudaErrors(cudaMalloc((void**)& p.next_path, sizeof(unsigned int)));
-
-    checkCudaErrors(cudaMalloc((void**)& p.next_sample, sizeof(ull)));
-    checkCudaErrors(cudaMemset((void*)p.next_sample, 0, sizeof(ull)));
-    p.m.allocateDeviceMem();
-
-    checkCudaErrors(cudaMalloc((void**)&p.numsamples_perpixel, nx * ny * sizeof(ull)));
-    checkCudaErrors(cudaMemset((void*)p.numsamples_perpixel, 0, nx * ny * sizeof(ull)));
+    checkCudaErrors(cudaMalloc((void**)& p.r, maxActivePaths * sizeof(ray)));
+    checkCudaErrors(cudaMalloc((void**)& p.shadow, maxActivePaths * sizeof(ray)));
+    checkCudaErrors(cudaMalloc((void**)& p.state, maxActivePaths * sizeof(rand_state)));
+    checkCudaErrors(cudaMalloc((void**)& p.attentuation, maxActivePaths * sizeof(vec3)));
+    checkCudaErrors(cudaMalloc((void**)& p.emitted, maxActivePaths * sizeof(vec3)));
+    checkCudaErrors(cudaMalloc((void**)& p.bounce, maxActivePaths * sizeof(unsigned short)));
+    checkCudaErrors(cudaMalloc((void**)& p.pstate, maxActivePaths * sizeof(pathstate)));
+    checkCudaErrors(cudaMalloc((void**)& p.hit_id, maxActivePaths * sizeof(int)));
+    checkCudaErrors(cudaMalloc((void**)& p.hit_normal, maxActivePaths * sizeof(vec3)));
+    checkCudaErrors(cudaMalloc((void**)& p.hit_t, maxActivePaths * sizeof(float)));
+    checkCudaErrors(cudaMalloc((void**)& p.active_paths, maxActivePaths * sizeof(unsigned int)));
 }
 
 void free_paths(const paths& p) {
@@ -149,23 +186,18 @@ void free_paths(const paths& p) {
     checkCudaErrors(cudaFree(p.hit_id));
     checkCudaErrors(cudaFree(p.hit_normal));
     checkCudaErrors(cudaFree(p.hit_t));
-    checkCudaErrors(cudaFree(p.next_sample));
-
     checkCudaErrors(cudaFree(p.active_paths));
-    checkCudaErrors(cudaFree(p.next_path));
-
-    p.m.freeDeviceMem();
-    checkCudaErrors(cudaFree(p.numsamples_perpixel));
 }
 
-__global__ void fetch_samples(const render_params params, paths p, bool first, const camera cam) {
+__global__ void fetch_samples(const render_params params, RenderContext context, bool first, const camera cam) {
     // kMaxActivePaths threads are started to fetch the samples from all_sample_pool and initialize the paths
     // to keep things simple a block contains a single warp so that we only need to keep a single shared nextSample per block
+    paths& p = context.paths;
 
     const unsigned int pid = threadIdx.x + blockIdx.x * blockDim.x;
     if (pid == 0)
-        p.next_path[0] = 0;
-    p.m.reset(pid, first);
+        context.next_path[0] = 0;
+    context.m.reset(pid, first);
     __syncthreads();
 
     if (pid >= params.maxActivePaths)
@@ -193,7 +225,7 @@ __global__ void fetch_samples(const render_params params, paths p, bool first, c
     if (terminated) {
         // first terminated lane increments next_sample
         if (idxTerminated == 0)
-            nextSample = atomicAdd(p.next_sample, numTerminated);
+            nextSample = atomicAdd(context.next_sample, numTerminated);
 
         // compute sample this lane is going to fetch
         const ull sample_id = nextSample + idxTerminated;
@@ -204,7 +236,7 @@ __global__ void fetch_samples(const render_params params, paths p, bool first, c
         // retrieve pixel_id corresponding to current path
         const unsigned int pixel_id = (sample_id / params.spp) % (params.width() * params.height());
         p.active_paths[pid] = pixel_id;
-        atomicAdd(p.numsamples_perpixel + pixel_id, 1);
+        atomicAdd(context.numsamples_perpixel + pixel_id, 1);
 
         // compute pixel coordinates
         const unsigned int x = pixel_id % params.width();
@@ -247,7 +279,9 @@ __device__ void pop_bitstack(unsigned long long& bitstack, int& idx) {
     }
 }
 
-__global__ void trace_scattered(const render_params params, paths p) {
+__global__ void trace_scattered(const render_params params, RenderContext context) {
+    paths& p = context.paths;
+
     // a limited number of threads are started to operate on active_paths
 
     unsigned int pid = 0; // currently traced path
@@ -263,8 +297,8 @@ __global__ void trace_scattered(const render_params params, paths p) {
 
     // Initialize persistent threads.
     // given that each block is 32 thread wide, we can use threadIdx.x as a warpId
-    __shared__ volatile int nextPathArray[MaxBlockHeight]; // Current ray index in global buffer.
-    __shared__ volatile bool noMorePaths[MaxBlockHeight]; // true when no more paths are available to fetch
+    __shared__ volatile int nextPathArray[TRAVERSAL_MAX_BLOCK_HEIGHT]; // Current ray index in global buffer.
+    __shared__ volatile bool noMorePaths[TRAVERSAL_MAX_BLOCK_HEIGHT]; // true when no more paths are available to fetch
 
     // Persistent threads: fetch and process rays in a loop.
 
@@ -283,7 +317,7 @@ __global__ void trace_scattered(const render_params params, paths p) {
         if (terminated) {
             // first terminated lane updates the base ray index
             if (idxTerminated == 0) {
-                pathBase = atomicAdd(p.next_path, numTerminated);
+                pathBase = atomicAdd(context.next_path, numTerminated);
                 noMoreP = (pathBase + numTerminated) >= params.maxActivePaths;
             }
 
@@ -387,7 +421,8 @@ __global__ void trace_scattered(const render_params params, paths p) {
 }
 
 // generate shadow rays for all non terminated rays with intersections
-__global__ void generate_shadow_rays(const render_params params, paths p) {
+__global__ void generate_shadow_rays(const render_params params, RenderContext context) {
+    paths& p = context.paths;
 
     const vec3 light_center(5000, 0, 0);
     const float light_radius = params.lightRadius;
@@ -396,7 +431,7 @@ __global__ void generate_shadow_rays(const render_params params, paths p) {
     // kMaxActivePaths threads update all p.num_active_paths
     const unsigned int pid = threadIdx.x + blockIdx.x * blockDim.x;
     if (pid == 0)
-        p.next_path[0] = 0;
+        context.next_path[0] = 0;
     __syncthreads();
 
     if (pid >= params.maxActivePaths)
@@ -439,7 +474,9 @@ __global__ void generate_shadow_rays(const render_params params, paths p) {
 }
 
 // traces all paths that have FLAG_HAS_SHADOW set, sets FLAG_SHADOW_HIT to true if there is a hit
-__global__ void trace_shadows(const render_params params, paths p) {
+__global__ void trace_shadows(const render_params params, RenderContext context) {
+    paths& p = context.paths;
+
     // a limited number of threads are started to operate on active_paths
 
     unsigned int pid = 0; // currently traced path
@@ -454,7 +491,7 @@ __global__ void trace_shadows(const render_params params, paths p) {
 
     // Initialize persistent threads.
     // given that each block is 32 thread wide, we can use threadIdx.x as a warpId
-    __shared__ volatile int nextPathArray[MaxBlockHeight]; // Current ray index in global buffer.
+    __shared__ volatile int nextPathArray[TRAVERSAL_MAX_BLOCK_HEIGHT]; // Current ray index in global buffer.
 
     // Persistent threads: fetch and process rays in a loop.
 
@@ -472,7 +509,7 @@ __global__ void trace_shadows(const render_params params, paths p) {
         if (terminated) {
             // first terminated lane updates the base ray index
             if (idxTerminated == 0)
-                pathBase = atomicAdd(p.next_path, numTerminated);
+                pathBase = atomicAdd(context.next_path, numTerminated);
 
             pid = pathBase + idxTerminated;
             if (pid >= params.maxActivePaths)
@@ -576,17 +613,19 @@ __device__ int rgbToInt(float r, float g, float b)
     return (int(b) << 16) | (int(g) << 8) | int(r);
 }
 
-__global__ void copyToUintBuffer(const render_params params, ull* numsamples_perpixel, unsigned int* uint_render_buffer) {
+__global__ void copyToUintBuffer(const render_params params, RenderContext context, unsigned int* uint_render_buffer) {
     const unsigned int pixel_id = threadIdx.x + blockIdx.x * blockDim.x;
     if (pixel_id >= (params.width() * params.height()))
         return;
-    const vec3 pixel = params.fb[pixel_id];
-    const ull spp = numsamples_perpixel[pixel_id];
+    const vec3 pixel = context.output_buffer[pixel_id];
+    const ull spp = context.numsamples_perpixel[pixel_id];
     uint_render_buffer[pixel_id] = rgbToInt(pixel.r() / spp, pixel.g() / spp, pixel.b() / spp);
 }
 
 // for all non terminated rays, accounts for shadow hit, compute scattered ray and resets the flag
-__global__ void update(const render_params params, paths p) {
+__global__ void update(const render_params params, RenderContext context) {
+    paths& p = context.paths;
+
     const vec3 sky_emissive = params.skyColor;
 
     // kMaxActivePaths threads update all p.num_active_paths
@@ -609,11 +648,10 @@ __global__ void update(const render_params params, paths p) {
             const vec3 albedo = vec3(d_colormap[clr_idx++], d_colormap[clr_idx++], d_colormap[clr_idx++]);
 
             const unsigned int pixel_id = p.active_paths[pid];
-            atomicAdd(params.fb[pixel_id].e, albedo.e[0]);
-            atomicAdd(params.fb[pixel_id].e + 1, albedo.e[1]);
-            atomicAdd(params.fb[pixel_id].e + 2, albedo.e[2]);
+            atomicAdd(context.output_buffer[pixel_id].e, albedo.e[0]);
+            atomicAdd(context.output_buffer[pixel_id].e + 1, albedo.e[1]);
+            atomicAdd(context.output_buffer[pixel_id].e + 2, albedo.e[2]);
         }
-        pstate == DONE;
     } else if (pstate == HIT || pstate == HIT_AND_LIGHT) {
         // update path attenuation
         const int hit_id = p.hit_id[pid];
@@ -627,9 +665,9 @@ __global__ void update(const render_params params, paths p) {
         if (pstate == HIT_AND_LIGHT) {
             const vec3 incoming = p.emitted[pid] * attenuation;
             const unsigned int pixel_id = p.active_paths[pid];
-            atomicAdd(params.fb[pixel_id].e, incoming.e[0]);
-            atomicAdd(params.fb[pixel_id].e + 1, incoming.e[1]);
-            atomicAdd(params.fb[pixel_id].e + 2, incoming.e[2]);
+            atomicAdd(context.output_buffer[pixel_id].e, incoming.e[0]);
+            atomicAdd(context.output_buffer[pixel_id].e + 1, incoming.e[1]);
+            atomicAdd(context.output_buffer[pixel_id].e + 2, incoming.e[2]);
         }
 
         // scatter ray, only if we didn't reach kMaxBounces
@@ -654,9 +692,9 @@ __global__ void update(const render_params params, paths p) {
         if (bounce > 0) {
             const vec3 incoming = p.attentuation[pid] * sky_emissive;
             const unsigned int pixel_id = p.active_paths[pid];
-            atomicAdd(params.fb[pixel_id].e, incoming.e[0]);
-            atomicAdd(params.fb[pixel_id].e + 1, incoming.e[1]);
-            atomicAdd(params.fb[pixel_id].e + 2, incoming.e[2]);
+            atomicAdd(context.output_buffer[pixel_id].e, incoming.e[0]);
+            atomicAdd(context.output_buffer[pixel_id].e + 1, incoming.e[1]);
+            atomicAdd(context.output_buffer[pixel_id].e + 2, incoming.e[2]);
         }
         pstate = DONE;
     }
@@ -767,13 +805,6 @@ int cmpfunc(const void * a, const void * b) {
         return 0;
 }
 
-void initCuda(const options opt) {
-    int num_pixels = opt.nx * opt.ny;
-    size_t fb_size = num_pixels * sizeof(vec3);
-    checkCudaErrors(cudaMalloc((void**)&d_fb, fb_size));
-    checkCudaErrors(cudaMemset(d_fb, 0, fb_size));
-}
-
 void loadColormap(const char* filename) {
     vector<vector<float>> data = parse2DCsvFile(filename);
     float* colormap = new float[data.size() * 3];
@@ -806,7 +837,6 @@ int loadScene(const options opt) {
 
 render_params setupRenderParams(options opt, int bvh_size) {
     render_params params;
-    params.fb = d_fb;
     params.leaf_offset = bvh_size / 2;
     params.colors = d_colors;
     params._width = opt.nx;
@@ -816,21 +846,21 @@ render_params setupRenderParams(options opt, int bvh_size) {
     return params;
 }
 
-void renderIteration(const options& opt, const render_params& params, const paths& p, const camera& cam, unsigned int iteration, bool lightEnabled) {
+void renderIteration(const options& opt, const render_params& params, const RenderContext& context, const camera& cam, bool lightEnabled) {
 
     // init kMaxActivePaths using equal number of threads
     {
         const int threads = 32; // 1 warp per block
         const int blocks = (opt.maxActivePaths + threads - 1) / threads;
-        fetch_samples <<< blocks, threads >>> (params, p, iteration == 0, cam);
+        fetch_samples <<< blocks, threads >>> (params, context, context.iteration == 0, cam);
         checkCudaErrors(cudaGetLastError());
     }
 
     // traverse bvh
     {
         dim3 blocks(6400 * 2, 1);
-        dim3 threads(MaxBlockWidth, MaxBlockHeight);
-        trace_scattered <<< blocks, threads >>> (params, p);
+        dim3 threads(TRAVERSAL_MAX_BLOCK_WIDTH, TRAVERSAL_MAX_BLOCK_HEIGHT);
+        trace_scattered <<< blocks, threads >>> (params, context);
         checkCudaErrors(cudaGetLastError());
     }
 
@@ -839,7 +869,7 @@ void renderIteration(const options& opt, const render_params& params, const path
     {
         const int threads = 128;
         const int blocks = (opt.maxActivePaths + threads - 1) / threads;
-        generate_shadow_rays <<< blocks, threads >>> (params, p);
+        generate_shadow_rays <<< blocks, threads >>> (params, context);
         checkCudaErrors(cudaGetLastError());
     }
 
@@ -847,8 +877,8 @@ void renderIteration(const options& opt, const render_params& params, const path
     if (lightEnabled)
     {
         dim3 blocks(6400 * 2, 1);
-        dim3 threads(MaxBlockWidth, MaxBlockHeight);
-        trace_shadows <<< blocks, threads >>> (params, p);
+        dim3 threads(TRAVERSAL_MAX_BLOCK_WIDTH, TRAVERSAL_MAX_BLOCK_HEIGHT);
+        trace_shadows <<< blocks, threads >>> (params, context);
         checkCudaErrors(cudaGetLastError());
     }
 
@@ -856,19 +886,12 @@ void renderIteration(const options& opt, const render_params& params, const path
     {
         const int threads = 128;
         const int blocks = (opt.maxActivePaths + threads - 1) / threads;
-        update <<< blocks, threads >>> (params, p);
+        update <<< blocks, threads >>> (params, context);
         checkCudaErrors(cudaGetLastError());
     }
 }
 
-void resetRenderer() {
-    r_iteration = 0;
-    checkCudaErrors(cudaMemset(d_fb, 0, r_num_pixels * sizeof(vec3)));
-    checkCudaErrors(cudaMemset((void*)r_paths->next_sample, 0, sizeof(ull)));
-    checkCudaErrors(cudaMemset((void*)r_paths->numsamples_perpixel, 0, r_num_pixels * sizeof(ull)));
-}
-
-void render(const options& opt, render_params& params, const paths& p, camera& cam) {
+void render(const options& opt, render_params& params, camera& cam, RenderContext& context) {
     bool guiChanged = true;
     bool lightEnabled = true;
     clock_t start = clock();
@@ -879,7 +902,7 @@ void render(const options& opt, render_params& params, const paths& p, camera& c
         if (camera_updated || guiChanged || params.preview != r_preview) {
             params.preview = r_preview;
             cam.update();
-            resetRenderer();
+            context.resetRenderer();
             camera_updated = false;
             guiChanged = false;
             render = true;
@@ -892,25 +915,25 @@ void render(const options& opt, render_params& params, const paths& p, camera& c
         }
 
         if (render) {
-            renderIteration(opt, params, p, cam, r_iteration, lightEnabled);
+            renderIteration(opt, params, context, cam, lightEnabled);
 
             {
                 const int threads = 128;
                 const int blocks = (params.width() * params.height() + threads - 1) / threads;
-                CudaGLContext* context = r_preview ? preview_context : render_context;
-                copyToUintBuffer << < blocks, threads >> > (params, p.numsamples_perpixel, (unsigned int*)context->cuda_dev_render_buffer);
+                CudaGLContext* glContext = r_preview ? preview_context : render_context;
+                copyToUintBuffer << < blocks, threads >> > (params, context, (unsigned int*)glContext->cuda_dev_render_buffer);
 
-                updateWindow(context, guiParams, guiChanged);
+                updateWindow(glContext, guiParams, guiChanged);
             }
 
             // print metrics
             if (opt.verbose) {
-                print_metrics << < 1, 1 >> > (p.m, r_iteration, opt.maxActivePaths, (float)(clock() - start) / CLOCKS_PER_SEC, false);
+                print_metrics <<< 1, 1 >>> (context.m, context.iteration, opt.maxActivePaths, (float)(clock() - start) / CLOCKS_PER_SEC, false);
                 checkCudaErrors(cudaGetLastError());
             }
 
-            r_iteration++;
-            if (!r_preview && r_iteration > 0 && !(r_iteration % 100))
+            context.iteration++;
+            if (!r_preview && context.iteration > 0 && !(context.iteration % 100))
                 write_image("temp_save.png", render_context);
             
             if (r_preview)
@@ -919,7 +942,7 @@ void render(const options& opt, render_params& params, const paths& p, camera& c
     }
     cudaProfilerStop();
 
-    print_metrics <<< 1, 1 >>> (p.m, r_iteration, opt.maxActivePaths, (float)(clock() - start) / CLOCKS_PER_SEC, true);
+    print_metrics <<< 1, 1 >>> (context.m, context.iteration, opt.maxActivePaths, (float)(clock() - start) / CLOCKS_PER_SEC, true);
     checkCudaErrors(cudaGetLastError());
 
     checkCudaErrors(cudaDeviceSynchronize());
@@ -955,10 +978,7 @@ int main(int argc, char** argv) {
 
     registerMouseMoveFunc(mouseMove);
 
-    initCuda(opt);
     loadColormap(opt.colormap);
-
-    r_num_pixels = opt.nx * opt.ny;
 
     const int bvh_size = loadScene(opt);
 
@@ -966,12 +986,13 @@ int main(int argc, char** argv) {
 
     render_params params = setupRenderParams(opt, bvh_size);
 
-    r_paths = new paths();
-    setup_paths(*r_paths, opt.nx, opt.ny, opt.ns, opt.maxActivePaths);
+    RenderContext renderContext(opt.nx * opt.ny);
+
+    setup_paths(renderContext.paths, opt.maxActivePaths);
 
     cout << "started renderer\n" << std::flush;
 
-    render(opt, params, *r_paths, *cam);
+    render(opt, params, *cam, renderContext);
 
     char imagename[100];
     sprintf(imagename, "%s_%dx%dx%d_%d_bvh.png", opt.input, opt.nx, opt.ny, opt.ns, opt.dist);
@@ -981,12 +1002,14 @@ int main(int argc, char** argv) {
     destroyWindow();
 
     delete cam;
-    free_paths(*r_paths);
-    delete r_paths;
+    
+    free_paths(renderContext.paths);
+    renderContext.freeDeviceMem();
+
     releaseScene(d_colors);
     checkCudaErrors(cudaDeviceSynchronize());
     checkCudaErrors(cudaGetLastError());
-    checkCudaErrors(cudaFree(params.fb));
+    
     delete render_context;
     delete preview_context;
 
