@@ -787,12 +787,15 @@ void write_image(const char* output_file, CudaGLContext *context) {
     checkCudaErrors(cudaMemcpy(idata, context->cuda_dev_render_buffer, numPixels * sizeof(unsigned int), cudaMemcpyDeviceToHost));
 
     char* data = new char[numPixels * 3];
+    // revert y-axis to keep image consistent with window display
     int idx = 0;
-    for (size_t i = 0; i < numPixels; i++) {
-        unsigned int pixel = idata[i];
-        data[idx++] = pixel & 0xFF;
-        data[idx++] = (pixel & 0xFF00) >> 8;
-        data[idx++] = (pixel & 0xFF0000) >> 16;
+    for (int y = context->t_height - 1; y >= 0; y--) {
+        for (int x = 0; x < context->t_width; x++) {
+            unsigned int pixel = idata[y * context->t_width + x];
+            data[idx++] = pixel & 0xFF;
+            data[idx++] = (pixel & 0xFF00) >> 8;
+            data[idx++] = (pixel & 0xFF0000) >> 16;
+        }
     }
     stbi_write_png(output_file, context->t_width, context->t_height, 3, (void*)data, context->t_width * 3);
 
