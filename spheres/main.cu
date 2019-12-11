@@ -400,10 +400,7 @@ __global__ void trace_scattered(RenderContext context) {
                     }
                 }
 
-                if (found) // exit traversal once we find an intersection in any leaf
-                    idx = IDX_SENTINEL;
-                else
-                    pop_bitstack(bitstack, idx);
+                pop_bitstack(bitstack, idx);
             }
 
             // some lanes may have already exited the loop, if not enough active thread are left, exit the loop

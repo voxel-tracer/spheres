@@ -43,8 +43,8 @@ void load_from_csv(const char *input, scene& sc) {
     std::vector<std::vector<float>> data = parse2DCsvFile(input);
     // make sure we only load N such that (N/lane_size_spheres) is a multiple of 2
     int size = data.size();
-    size /= 10;
-    sc.spheres_size = powf(2, (int)(log2f((float)size))) * 10;
+    size /= lane_size_spheres;
+    sc.spheres_size = powf(2, (int)(log2f((float)size))) * lane_size_spheres;
     sc.spheres = new sphere[sc.spheres_size];
 
     int max_gen = 0;
