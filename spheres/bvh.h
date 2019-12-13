@@ -54,8 +54,8 @@ int box_z_compare(const void* a, const void* b) {
 }
 
 vec3 minof(const sphere* l, int n) {
-    vec3 min = l[0].center;
-    for (int i = 1; i < n; i++) {
+    vec3 min(INFINITY, INFINITY, INFINITY);
+    for (int i = 0; i < n; i++) {
         for (int a = 0; a < 3; a++)
             min[a] = fminf(min[a], l[i].center[a]);
     }
@@ -63,36 +63,46 @@ vec3 minof(const sphere* l, int n) {
 }
 
 vec3 maxof(const sphere* l, int n) {
-    vec3 max = l[0].center;
-    for (int i = 1; i < n; i++) {
+    vec3 max(-INFINITY, -INFINITY, -INFINITY);
+    for (int i = 0; i < n; i++) {
         for (int a = 0; a < 3; a++)
             max[a] = fmaxf(max[a], l[i].center[a]);
     }
     return max;
 }
 
-void build_bvh(bvh_node* nodes, int idx, sphere* l, int n) {
-    assert(n >= lane_size_spheres);
-    nodes[idx] = bvh_node(minof(l, n), maxof(l, n));
+void build_bvh(bvh_node* nodes, int idx, sphere* l, int n, int m) {
+    nodes[idx] = bvh_node(minof(l, m), maxof(l, m));
 
-    if (n > lane_size_spheres) {
+    if (m > lane_size_spheres) {
         const unsigned int axis = nodes[idx].split_axis();
         if (axis == 0)
-            qsort(l, n, sizeof(sphere), box_x_compare);
+            qsort(l, m, sizeof(sphere), box_x_compare);
         else if (axis == 1)
-            qsort(l, n, sizeof(sphere), box_y_compare);
+            qsort(l, m, sizeof(sphere), box_y_compare);
         else
-            qsort(l, n, sizeof(sphere), box_z_compare);
+            qsort(l, m, sizeof(sphere), box_z_compare);
 
-        build_bvh(nodes, idx * 2, l, n / 2);
-        build_bvh(nodes, idx * 2 + 1, l + n / 2, n / 2);
+        // split the primitives such that at most n/2 are on the left of the split and the rest are on the right
+        // given we have m primitives, left will get min(n/2, m) and right gets max(0, m - n/2)
+        build_bvh(nodes, idx * 2, l, n / 2, min(n / 2, m));
+        build_bvh(nodes, idx * 2 + 1, l + n / 2, n / 2, max(0, m - (n / 2)));
     }
 }
 
-bvh_node* build_bvh(sphere* l, int n, int& bvh_size) {
-    bvh_size = 2 * n / lane_size_spheres;
+bvh_node* build_bvh(sphere* l, unsigned int size, int& bvh_size) {
+    // total number of leaves, given that each leaf holds up to lane_size_spheres
+    const int numLeaves = (size + lane_size_spheres - 1) / lane_size_spheres;
+    std::cout << "numLeaves: " << numLeaves << std::endl;
+    // number of leaves that is a power of 2, this is the max width of a complete binary tree
+    const int pow2NumLeaves = (int) powf(2.0f, ceilf(log2f(numLeaves)));
+    std::cout << "pow2NumLeaves: " << pow2NumLeaves << std::endl;
+    // total number of nodes in the tree
+    bvh_size = pow2NumLeaves * 2;
+    std::cout << "bvh_size: " << bvh_size << std::endl;
+    // allocate enough nodes to hold the whole tree, even if some of the nodes will remain unused
     bvh_node* nodes = new bvh_node[bvh_size];
-    build_bvh(nodes, 1, l, n);
+    build_bvh(nodes, 1, l, pow2NumLeaves * lane_size_spheres, numLeaves * lane_size_spheres);
 
     return nodes;
 }
