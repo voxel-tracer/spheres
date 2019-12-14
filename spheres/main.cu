@@ -101,6 +101,8 @@ public:
     unsigned int spp;
     unsigned int maxActivePaths;
 
+    int numPrimitivesPerLeaf;
+
     int* colors;
 
     float lightRadius;
@@ -112,8 +114,8 @@ public:
         return width() * height();
     }
 
-    RenderContext(int width, int height, int _spp, int _maxActivePaths, int _leafOffset, int *_colors) :_width(width), _height(height), spp(_spp), 
-            maxActivePaths(_maxActivePaths), leaf_offset(_leafOffset), colors(_colors) {
+    RenderContext(int width, int height, int _spp, int _maxActivePaths, int _leafOffset, int ppl, int *_colors) :_width(width), _height(height), spp(_spp), 
+            maxActivePaths(_maxActivePaths), leaf_offset(_leafOffset), numPrimitivesPerLeaf(ppl), colors(_colors) {
         checkCudaErrors(cudaMalloc((void**)&next_path, sizeof(unsigned int)));
         checkCudaErrors(cudaMalloc((void**)&next_sample, sizeof(ull)));
         checkCudaErrors(cudaMalloc((void**)&numsamples_perpixel, numPixels() * sizeof(ull)));
@@ -386,17 +388,20 @@ __global__ void trace_scattered(RenderContext context) {
                     pop_bitstack(bitstack, idx);
                 }
             } else {
-                int m = (idx - context.leaf_offset) * lane_size_float;
+                int m = (idx - context.leaf_offset) * context.numPrimitivesPerLeaf * 3; // index to the first float in the leaf primitives
                 #pragma unroll
-                for (int i = 0; i < lane_size_spheres; i++) {
+                for (int i = 0; i < context.numPrimitivesPerLeaf; i++) {
                     float x = tex1Dfetch(t_spheres, m++);
+                    if (isinf(x))
+                        break; // we reached the end of the primitives buffer
+
                     float y = tex1Dfetch(t_spheres, m++);
                     float z = tex1Dfetch(t_spheres, m++);
                     vec3 center(x, y, z);
                     if (hit_point(center, r, 0.001f, closest, rec)) {
                         found = true;
                         closest = rec.t;
-                        rec.idx = (idx - context.leaf_offset) * lane_size_spheres + i;
+                        rec.idx = (idx - context.leaf_offset) * context.numPrimitivesPerLeaf + i;
                     }
                 }
 
@@ -570,10 +575,13 @@ __global__ void trace_shadows(RenderContext context) {
                 }
             }
             else {
-                int m = (idx - context.leaf_offset) * lane_size_float;
+                int m = (idx - context.leaf_offset) * context.numPrimitivesPerLeaf * 3;
                 #pragma unroll
-                for (int i = 0; i < lane_size_spheres && !found; i++) {
+                for (int i = 0; i < context.numPrimitivesPerLeaf && !found; i++) {
                     float x = tex1Dfetch(t_spheres, m++);
+                    if (isinf(x))
+                        break; // we reached the end of the primitives buffer
+
                     float y = tex1Dfetch(t_spheres, m++);
                     float z = tex1Dfetch(t_spheres, m++);
                     vec3 center(x, y, z);
@@ -727,24 +735,19 @@ void copySceneToDevice(const scene& sc, int** d_colors) {
     }
 
     // copying spheres to texture memory
-    const int spheres_size_float = lane_size_float * (sc.spheres_size / lane_size_spheres);
+    const int spheres_size_float = sc.spheres_size * 3;
 
     // copy the spheres in array of floats
     // do it after we build the BVH as it would have moved the spheres around
     float* floats = new float[spheres_size_float];
     int* colors = new int[sc.spheres_size];
-    int idx = 0;
-    int i = 0;
-    while (i < sc.spheres_size) {
-        for (int j = 0; j < lane_size_spheres; j++, i++) {
-            floats[idx++] = sc.spheres[i].center.x();
-            floats[idx++] = sc.spheres[i].center.y();
-            floats[idx++] = sc.spheres[i].center.z();
-            colors[i] = sc.spheres[i].color;
-        }
-        idx += lane_padding_float; // padding
+    for (int i = 0, idx = 0; i < sc.spheres_size; i++) {
+        const sphere s = sc.spheres[i];
+        floats[idx++] = s.center.x();
+        floats[idx++] = s.center.y();
+        floats[idx++] = s.center.z();
+        colors[i] = s.color;
     }
-    assert(idx == scene_size_float);
 
     checkCudaErrors(cudaMalloc((void**)d_colors, sc.spheres_size * sizeof(int)));
     checkCudaErrors(cudaMemcpy(*d_colors, colors, sc.spheres_size * sizeof(int), cudaMemcpyHostToDevice));
@@ -830,7 +833,7 @@ void loadColormap(const char* filename) {
 int loadScene(const options opt) {
     scene sc;
     if (!opt.binary) {
-        load_from_csv(opt.input, sc);
+        load_from_csv(opt.input, sc, opt.numPrimitivesPerLeaf);
         store_to_binary(strcat(opt.input, ".bin"), sc);
     }
     else {
@@ -979,7 +982,7 @@ int main(int argc, char** argv) {
 
     setup_camera(opt.nx, opt.ny, opt.dist);
 
-    RenderContext renderContext(opt.nx, opt.ny, opt.ns, opt.maxActivePaths, bvh_size/2, d_colors);
+    RenderContext renderContext(opt.nx, opt.ny, opt.ns, opt.maxActivePaths, bvh_size/2, opt.numPrimitivesPerLeaf, d_colors);
 
     setup_paths(renderContext.paths, opt.maxActivePaths);
 

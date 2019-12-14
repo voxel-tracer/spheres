@@ -39,12 +39,12 @@ void load_from_binary(const char *input, scene& sc) {
     in.read((char*)sc.bvh, sizeof(bvh_node) * sc.bvh_size);
 }
 
-void load_from_csv(const char *input, scene& sc) {
+void load_from_csv(const char *input, scene& sc, int numPrimitivesPerLeaf) {
     std::vector<std::vector<float>> data = parse2DCsvFile(input);
     // make sure we only load N such that (N/lane_size_spheres) is a multiple of 2
     int size = data.size();
-    size /= lane_size_spheres;
-    sc.spheres_size = powf(2, (int)(log2f((float)size))) * lane_size_spheres;
+    const bool addMarker = (size % numPrimitivesPerLeaf) > 0;
+    sc.spheres_size = addMarker ? size + 1 : size; // add room for the end marker
     sc.spheres = new sphere[sc.spheres_size];
 
     int max_gen = 0;
@@ -54,16 +54,17 @@ void load_from_csv(const char *input, scene& sc) {
         int gen = 1 + (parent > 0 ? sc.spheres[parent - 1].color : 0);
         max_gen = max(gen, max_gen);
         sc.spheres[i++] = sphere(vec3(l[2], l[3], l[4]), gen);
-        if (i == sc.spheres_size)
-            break;
     }
 
     // normalize color idx such that max_gen = 256
     float normalizer = 255.0f / max_gen;
-    for (int i = 0; i < sc.spheres_size; i++) {
+    for (int i = 0; i < size; i++) {
         int gen = sc.spheres[i].color;
         sc.spheres[i].color = (int) (gen * normalizer);
     }
 
-    sc.bvh = build_bvh(sc.spheres, sc.spheres_size, sc.bvh_size);
+    sc.bvh = build_bvh(sc.spheres, size, numPrimitivesPerLeaf, sc.bvh_size);
+
+    if (addMarker)
+        sc.spheres[size] = sphere(vec3(INFINITY, INFINITY, INFINITY), 0);
 }

@@ -71,10 +71,10 @@ vec3 maxof(const sphere* l, int n) {
     return max;
 }
 
-void build_bvh(bvh_node* nodes, int idx, sphere* l, int n, int m) {
+void build_bvh(bvh_node* nodes, int idx, sphere* l, int n, int m, int numPrimitivesPerLeaf) {
     nodes[idx] = bvh_node(minof(l, m), maxof(l, m));
 
-    if (m > lane_size_spheres) {
+    if (m > numPrimitivesPerLeaf) {
         const unsigned int axis = nodes[idx].split_axis();
         if (axis == 0)
             qsort(l, m, sizeof(sphere), box_x_compare);
@@ -85,14 +85,14 @@ void build_bvh(bvh_node* nodes, int idx, sphere* l, int n, int m) {
 
         // split the primitives such that at most n/2 are on the left of the split and the rest are on the right
         // given we have m primitives, left will get min(n/2, m) and right gets max(0, m - n/2)
-        build_bvh(nodes, idx * 2, l, n / 2, min(n / 2, m));
-        build_bvh(nodes, idx * 2 + 1, l + n / 2, n / 2, max(0, m - (n / 2)));
+        build_bvh(nodes, idx * 2, l, n / 2, min(n / 2, m), numPrimitivesPerLeaf);
+        build_bvh(nodes, idx * 2 + 1, l + n / 2, n / 2, max(0, m - (n / 2)), numPrimitivesPerLeaf);
     }
 }
 
-bvh_node* build_bvh(sphere* l, unsigned int size, int& bvh_size) {
-    // total number of leaves, given that each leaf holds up to lane_size_spheres
-    const int numLeaves = (size + lane_size_spheres - 1) / lane_size_spheres;
+bvh_node* build_bvh(sphere* l, unsigned int numPrimitives, int numPrimitivesPerLeaf, int& bvh_size) {
+    // total number of leaves, given that each leaf holds up to numPrimitivesPerLeaf
+    const int numLeaves = (numPrimitives + numPrimitivesPerLeaf - 1) / numPrimitivesPerLeaf;
     std::cout << "numLeaves: " << numLeaves << std::endl;
     // number of leaves that is a power of 2, this is the max width of a complete binary tree
     const int pow2NumLeaves = (int) powf(2.0f, ceilf(log2f(numLeaves)));
@@ -102,7 +102,7 @@ bvh_node* build_bvh(sphere* l, unsigned int size, int& bvh_size) {
     std::cout << "bvh_size: " << bvh_size << std::endl;
     // allocate enough nodes to hold the whole tree, even if some of the nodes will remain unused
     bvh_node* nodes = new bvh_node[bvh_size];
-    build_bvh(nodes, 1, l, pow2NumLeaves * lane_size_spheres, numLeaves * lane_size_spheres);
+    build_bvh(nodes, 1, l, pow2NumLeaves * numPrimitivesPerLeaf, numPrimitives, numPrimitivesPerLeaf);
 
     return nodes;
 }
