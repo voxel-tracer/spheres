@@ -29,9 +29,6 @@
     <ClInclude Include="libs\helper_cuda.h">
       <Filter>cuda</Filter>
     </ClInclude>
-    <ClInclude Include="libs\helper_cuda_gl.h">
-      <Filter>cuda</Filter>
-    </ClInclude>
     <ClInclude Include="libs\helper_string.h">
       <Filter>cuda</Filter>
     </ClInclude>

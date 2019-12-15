@@ -12,6 +12,7 @@ struct options {
     char* input = NULL;
     bool verbose = false;
     bool binary = false;
+    bool window = false;
     int numPrimitivesPerLeaf = 5;
 };
 
@@ -46,10 +47,12 @@ bool parse_args(int argc, char** argv, options& opt) {
             opt.verbose = true;
         else if (!strcmp(arg, "-b"))
             opt.binary = true;
+        else if (!strcmp(arg, "-w"))
+            opt.window = true;
         else if (!strcmp(arg, "-ppl"))
             opt.numPrimitivesPerLeaf = get_argi(argc, argv, ++idx);
         else if (!strcmp(arg, "-h")) {
-            std::cout << "usage: spheres -i <input file> [-b binary false] [-nx width 1200] [-ny height 1200] [-ns spp 10] [-d camera dist 100] [-mp max active paths 1M] [-c colormap viridis.csv] [-ppl primitivesPerLeaf 5] [-v verbose false]" << std::endl;
+            std::cout << "usage: spheres -i <input file> [-b binary false] [-nx width 1200] [-ny height 1200] [-ns spp 10] [-d camera dist 100] [-mp max active paths 1M] [-c colormap viridis.csv] [-ppl primitivesPerLeaf 5] [-w window false] [-v verbose false]" << std::endl;
             return false;
         }
         else {

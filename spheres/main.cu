@@ -87,10 +87,13 @@ public:
 
     ull* next_sample; // used by init() to track next sample to fetch
     ull* numsamples_perpixel; // how many samples have been traced per pixel so far
+    ull* numActivePaths; // only useful in windowless mode, number of active paths in last iteration
 
     unsigned int* next_path; // used by hit_bvh() to track next path to fetch and trace
 
-    vec3* output_buffer;
+    vec3* color_buffer;
+    unsigned int* uint_buffer;
+
     metrics m;
 
     unsigned int iteration = 0;
@@ -110,17 +113,21 @@ public:
 
     vec3 skyColor;
 
+    const bool window;
+
     __host__ __device__ unsigned int numPixels() {
         return width() * height();
     }
 
-    RenderContext(int width, int height, int _spp, int _maxActivePaths, int _leafOffset, int ppl, int *_colors) :_width(width), _height(height), spp(_spp), 
-            maxActivePaths(_maxActivePaths), leaf_offset(_leafOffset), numPrimitivesPerLeaf(ppl), colors(_colors) {
+    RenderContext(int width, int height, int _spp, int _maxActivePaths, int _leafOffset, int ppl, int *_colors, bool _window) :_width(width), _height(height), spp(_spp), 
+            maxActivePaths(_maxActivePaths), leaf_offset(_leafOffset), numPrimitivesPerLeaf(ppl), colors(_colors), window(_window) {
         checkCudaErrors(cudaMalloc((void**)&next_path, sizeof(unsigned int)));
         checkCudaErrors(cudaMalloc((void**)&next_sample, sizeof(ull)));
         checkCudaErrors(cudaMalloc((void**)&numsamples_perpixel, numPixels() * sizeof(ull)));
+        checkCudaErrors(cudaMalloc((void**)&numActivePaths, sizeof(ull)));
 
-        checkCudaErrors(cudaMalloc((void**)&output_buffer, numPixels() * sizeof(vec3)));
+        checkCudaErrors(cudaMalloc((void**)&color_buffer, numPixels() * sizeof(vec3)));
+        checkCudaErrors(cudaMalloc((void**)&uint_buffer, numPixels() * sizeof(int)));
 
         m.allocateDeviceMem();
 
@@ -131,17 +138,27 @@ public:
         checkCudaErrors(cudaFree(next_sample));
         checkCudaErrors(cudaFree(next_path));
         checkCudaErrors(cudaFree(numsamples_perpixel));
-        checkCudaErrors(cudaFree(output_buffer));
+        checkCudaErrors(cudaFree(color_buffer));
+        checkCudaErrors(cudaFree(uint_buffer));
+        checkCudaErrors(cudaFree(numActivePaths));
 
         m.freeDeviceMem();
     }
 
     void resetRenderer() {
         iteration = 0;
-        checkCudaErrors(cudaMemset(output_buffer, 0, numPixels() * sizeof(vec3)));
         checkCudaErrors(cudaMemset((void*)next_sample, 0, sizeof(ull)));
         checkCudaErrors(cudaMemset((void*)numsamples_perpixel, 0, numPixels() * sizeof(ull)));
-        checkCudaErrors(cudaMemset(output_buffer, 0, numPixels() * sizeof(vec3)));
+        checkCudaErrors(cudaMemset(color_buffer, 0, numPixels() * sizeof(vec3)));
+        checkCudaErrors(cudaMemset((void*)numActivePaths, 0, sizeof(ull)));
+    }
+
+    __device__ void reset(int pid, bool first) {
+        if (pid == 0) {
+            numActivePaths[0] = 0;
+            next_path[0] = 0;
+        }
+        m.reset(pid, first);
     }
 
     __host__ __device__ int width() {
@@ -150,6 +167,12 @@ public:
 
     __host__ __device__ int height() {
         return preview ? PREVIEW_HEIGHT : _height;
+    }
+
+    __host__ ull getNumActivePaths() const {
+        ull value;
+        checkCudaErrors(cudaMemcpy((void*)&value, numActivePaths, sizeof(ull), cudaMemcpyDeviceToHost));
+        return value;
     }
 };
 
@@ -202,9 +225,7 @@ __global__ void fetch_samples(RenderContext context, bool first, const camera ca
     paths& p = context.paths;
 
     const unsigned int pid = threadIdx.x + blockIdx.x * blockDim.x;
-    if (pid == 0)
-        context.next_path[0] = 0;
-    context.m.reset(pid, first);
+    context.reset(pid, first);
     __syncthreads();
 
     if (pid >= context.maxActivePaths)
@@ -236,9 +257,12 @@ __global__ void fetch_samples(RenderContext context, bool first, const camera ca
 
         // compute sample this lane is going to fetch
         const ull sample_id = nextSample + idxTerminated;
-        //const ull max_samples = (ull)params.width * (ull)params.height * (ull)params.spp;
-        //if (sample_id >= max_samples)
-        //    return; // no more samples to fetch
+        if (!context.window) {
+            // in windowless mode, we stop once we traced spp paths per pixel
+            const ull max_samples = (ull)context.numPixels() * (ull)context.spp;
+            if (sample_id >= max_samples)
+                return; // no more samples to fetch
+        }
 
         // retrieve pixel_id corresponding to current path
         const unsigned int pixel_id = (sample_id / context.spp) % context.numPixels();
@@ -258,6 +282,8 @@ __global__ void fetch_samples(RenderContext context, bool first, const camera ca
         p.bounce[pid] = 0;
         p.pstate[pid] = SCATTER;
     }
+
+    atomicAdd(context.numActivePaths, 1);
 }
 
 #define IDX_SENTINEL    0
@@ -623,13 +649,14 @@ __device__ int rgbToInt(float r, float g, float b)
     return (int(b) << 16) | (int(g) << 8) | int(r);
 }
 
-__global__ void copyToUintBuffer(RenderContext context, unsigned int* uint_render_buffer) {
+// takes into account preview vs render modes to only copy the pixels we need
+__global__ void copyToUintBuffer(RenderContext context) {
     const unsigned int pixel_id = threadIdx.x + blockIdx.x * blockDim.x;
     if (pixel_id >= context.numPixels())
         return;
-    const vec3 pixel = context.output_buffer[pixel_id];
+    const vec3 pixel = context.color_buffer[pixel_id];
     const ull spp = context.numsamples_perpixel[pixel_id];
-    uint_render_buffer[pixel_id] = rgbToInt(pixel.r() / spp, pixel.g() / spp, pixel.b() / spp);
+    context.uint_buffer[pixel_id] = rgbToInt(pixel.r() / spp, pixel.g() / spp, pixel.b() / spp);
 }
 
 // for all non terminated rays, accounts for shadow hit, compute scattered ray and resets the flag
@@ -658,9 +685,9 @@ __global__ void update(RenderContext context) {
             const vec3 albedo = vec3(d_colormap[clr_idx++], d_colormap[clr_idx++], d_colormap[clr_idx++]);
 
             const unsigned int pixel_id = p.pixelId[pid];
-            atomicAdd(context.output_buffer[pixel_id].e, albedo.e[0]);
-            atomicAdd(context.output_buffer[pixel_id].e + 1, albedo.e[1]);
-            atomicAdd(context.output_buffer[pixel_id].e + 2, albedo.e[2]);
+            atomicAdd(context.color_buffer[pixel_id].e, albedo.e[0]);
+            atomicAdd(context.color_buffer[pixel_id].e + 1, albedo.e[1]);
+            atomicAdd(context.color_buffer[pixel_id].e + 2, albedo.e[2]);
         }
         // in preview mode, do not bounce
         p.pstate[pid] = DONE;
@@ -677,9 +704,9 @@ __global__ void update(RenderContext context) {
         if (pstate == HIT_AND_LIGHT) {
             const vec3 incoming = p.emitted[pid] * attenuation;
             const unsigned int pixel_id = p.pixelId[pid];
-            atomicAdd(context.output_buffer[pixel_id].e, incoming.e[0]);
-            atomicAdd(context.output_buffer[pixel_id].e + 1, incoming.e[1]);
-            atomicAdd(context.output_buffer[pixel_id].e + 2, incoming.e[2]);
+            atomicAdd(context.color_buffer[pixel_id].e, incoming.e[0]);
+            atomicAdd(context.color_buffer[pixel_id].e + 1, incoming.e[1]);
+            atomicAdd(context.color_buffer[pixel_id].e + 2, incoming.e[2]);
         }
 
         // scatter ray, only if we didn't reach kMaxBounces
@@ -704,9 +731,9 @@ __global__ void update(RenderContext context) {
         if (bounce > 0) {
             const vec3 incoming = p.attentuation[pid] * sky_emissive;
             const unsigned int pixel_id = p.pixelId[pid];
-            atomicAdd(context.output_buffer[pixel_id].e, incoming.e[0]);
-            atomicAdd(context.output_buffer[pixel_id].e + 1, incoming.e[1]);
-            atomicAdd(context.output_buffer[pixel_id].e + 2, incoming.e[2]);
+            atomicAdd(context.color_buffer[pixel_id].e, incoming.e[0]);
+            atomicAdd(context.color_buffer[pixel_id].e + 1, incoming.e[1]);
+            atomicAdd(context.color_buffer[pixel_id].e + 2, incoming.e[2]);
         }
         pstate = DONE;
     }
@@ -784,23 +811,22 @@ void setup_camera(int nx, int ny, float dist) {
     cam->update();
 }
 
-void write_image(const char* output_file, CudaGLContext *context) {
-    const unsigned int numPixels = context->t_height * context->t_width;
-    unsigned int* idata = new unsigned int[numPixels];
-    checkCudaErrors(cudaMemcpy(idata, context->cuda_dev_render_buffer, numPixels * sizeof(unsigned int), cudaMemcpyDeviceToHost));
+void write_image(const char* output_file, RenderContext& context) {
+    unsigned int* idata = new unsigned int[context.numPixels()];
+    checkCudaErrors(cudaMemcpy(idata, context.uint_buffer, context.numPixels() * sizeof(unsigned int), cudaMemcpyDeviceToHost));
 
-    char* data = new char[numPixels * 3];
+    char* data = new char[context.numPixels() * 3];
     // revert y-axis to keep image consistent with window display
     int idx = 0;
-    for (int y = context->t_height - 1; y >= 0; y--) {
-        for (int x = 0; x < context->t_width; x++) {
-            unsigned int pixel = idata[y * context->t_width + x];
+    for (int y = context.height() - 1; y >= 0; y--) {
+        for (int x = 0; x < context.width(); x++) {
+            unsigned int pixel = idata[y * context.width() + x];
             data[idx++] = pixel & 0xFF;
             data[idx++] = (pixel & 0xFF00) >> 8;
             data[idx++] = (pixel & 0xFF0000) >> 16;
         }
     }
-    stbi_write_png(output_file, context->t_width, context->t_height, 3, (void*)data, context->t_width * 3);
+    stbi_write_png(output_file, context.width(), context.height(), 3, (void*)data, context.width() * 3);
 
     delete[] idata;
     delete[] data;
@@ -845,7 +871,7 @@ int loadScene(const options opt) {
     return sc.bvh_size;
 }
 
-void renderIteration(const RenderContext& context, const camera& cam, bool lightEnabled) {
+bool renderIteration(const RenderContext& context, const camera& cam, bool lightEnabled) {
 
     // init kMaxActivePaths using equal number of threads
     {
@@ -853,6 +879,11 @@ void renderIteration(const RenderContext& context, const camera& cam, bool light
         const int blocks = (context.maxActivePaths + threads - 1) / threads;
         fetch_samples <<< blocks, threads >>> (context, context.iteration == 0, cam);
         checkCudaErrors(cudaGetLastError());
+    }
+
+    if (context.getNumActivePaths() < (context.maxActivePaths / 100)) {
+        // not enough paths left to trace, stop the renderer
+        return false;
     }
 
     // traverse bvh
@@ -888,16 +919,58 @@ void renderIteration(const RenderContext& context, const camera& cam, bool light
         update <<< blocks, threads >>> (context);
         checkCudaErrors(cudaGetLastError());
     }
+
+    return true;
 }
 
+// no window rendering
 void render(RenderContext& context, camera& cam, bool verbose) {
+    clock_t start = clock();
+    cudaProfilerStart();
+    bool stop = false;
+
+    cam.update();
+    context.resetRenderer();
+
+    context.lightRadius = guiParams.lightRadius;
+    context.lightColor = vec3(guiParams.lightColor[0], guiParams.lightColor[1], guiParams.lightColor[2]) * guiParams.lightIntensity;
+    context.skyColor = vec3(guiParams.skyColor[0], guiParams.skyColor[1], guiParams.skyColor[2]) * guiParams.skyIntensity;
+
+    while (renderIteration(context, cam, true)) {
+        // print metrics
+        if (verbose) {
+            print_metrics <<< 1, 1 >>> (context, (float)(clock() - start) / CLOCKS_PER_SEC, false);
+            checkCudaErrors(cudaGetLastError());
+        }
+
+        context.iteration++;
+    }
+    cudaProfilerStop();
+
+    checkCudaErrors(cudaDeviceSynchronize());
+    std::cout << "Took " << ((float)(clock() - start) / CLOCKS_PER_SEC) << "s" << std::endl;
+
+    print_metrics <<< 1, 1 >>> (context, (float)(clock() - start) / CLOCKS_PER_SEC, true);
+    checkCudaErrors(cudaGetLastError());
+
+    // copy render buffer so we can save it to disk properly
+    const int threads = 128;
+    const int blocks = (context.numPixels() + threads - 1) / threads;
+    copyToUintBuffer <<< blocks, threads >>> (context);
+
+    checkCudaErrors(cudaDeviceSynchronize());
+}
+
+// window rendering
+void renderWindow(RenderContext& context, camera& cam, bool verbose) {
     bool guiChanged = true;
     bool lightEnabled = true;
     clock_t start = clock();
     cudaProfilerStart();
     bool render = true;
+    bool stop = false;
 
-    while (!pollWindowEvents()) {
+    while (!stop && !(context.window && pollWindowEvents())) {
         if (camera_updated || guiChanged || context.preview != r_preview) {
             context.preview = r_preview;
             cam.update();
@@ -913,27 +986,30 @@ void render(RenderContext& context, camera& cam, bool verbose) {
         }
 
         if (render) {
-            renderIteration(context, cam, lightEnabled);
+            stop = !renderIteration(context, cam, lightEnabled);
 
             {
                 const int threads = 128;
                 const int blocks = (context.numPixels() + threads - 1) / threads;
-                CudaGLContext* glContext = context.preview ? preview_context : render_context;
-                copyToUintBuffer <<< blocks, threads >>> (context, (unsigned int*)glContext->cuda_dev_render_buffer);
-
-                updateWindow(glContext, guiParams, guiChanged);
+                copyToUintBuffer <<< blocks, threads >>> (context);
             }
+
+            CudaGLContext* glContext = context.preview ? preview_context : render_context;
+            updateWindow(glContext, guiParams, guiChanged);
+
+            // only save in-progress render in window mode for now
+            // so it doesn't affect performance of the renderer
+            if (!context.preview && context.iteration > 0 && !(context.iteration % 100))
+                write_image("temp_save.png", context);
 
             // print metrics
             if (verbose) {
-                print_metrics <<< 1, 1 >>> (context, (float)(clock() - start) / CLOCKS_PER_SEC, false);
+                print_metrics << < 1, 1 >> > (context, (float)(clock() - start) / CLOCKS_PER_SEC, false);
                 checkCudaErrors(cudaGetLastError());
             }
 
             context.iteration++;
-            if (!context.preview && context.iteration > 0 && !(context.iteration % 100))
-                write_image("temp_save.png", render_context);
-            
+
             if (context.preview)
                 render = !render;
         }
@@ -970,32 +1046,39 @@ int main(int argc, char** argv) {
     if (!parse_args(argc, argv, opt))
         return -1;
 
-    initWindow();
-    render_context = new CudaGLContext(opt.nx, opt.ny);
-    preview_context = new CudaGLContext(512, 512);
-
-    registerMouseMoveFunc(mouseMove);
 
     loadColormap(opt.colormap);
-
     const int bvh_size = loadScene(opt);
-
     setup_camera(opt.nx, opt.ny, opt.dist);
+    RenderContext renderContext(opt.nx, opt.ny, opt.ns, opt.maxActivePaths, bvh_size / 2, opt.numPrimitivesPerLeaf, d_colors, opt.window);
 
-    RenderContext renderContext(opt.nx, opt.ny, opt.ns, opt.maxActivePaths, bvh_size/2, opt.numPrimitivesPerLeaf, d_colors);
+    if (opt.window) {
+        initWindow();
+        registerMouseMoveFunc(mouseMove);
+        preview_context = new CudaGLContext(renderContext.uint_buffer, 512, 512);
+        render_context = new CudaGLContext(renderContext.uint_buffer, opt.nx, opt.ny);
+    }
 
     setup_paths(renderContext.paths, opt.maxActivePaths);
 
     cout << "started renderer\n" << std::flush;
 
-    render(renderContext, *cam, opt.verbose);
+    if (opt.window)
+        renderWindow(renderContext, *cam, opt.verbose);
+    else
+        render(renderContext, *cam, opt.verbose);
 
     char imagename[100];
     sprintf(imagename, "%s_%dx%dx%d_%d_bvh.png", opt.input, opt.nx, opt.ny, opt.ns, opt.dist);
-    write_image(imagename, render_context);
+    write_image(imagename, renderContext);
 
     // clean up
-    destroyWindow();
+    if (opt.window) {
+        destroyWindow();
+
+        delete render_context;
+        delete preview_context;
+    }
 
     delete cam;
     
@@ -1005,9 +1088,6 @@ int main(int argc, char** argv) {
     releaseScene(d_colors);
     checkCudaErrors(cudaDeviceSynchronize());
     checkCudaErrors(cudaGetLastError());
-    
-    delete render_context;
-    delete preview_context;
 
     cudaDeviceReset();
 }

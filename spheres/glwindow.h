@@ -22,7 +22,7 @@ struct GuiParams {
 
 class CudaGLContext {
 public:
-    void* cuda_dev_render_buffer; // Cuda buffer for initial render
+    const void* render_buffer; // Cuda buffer for initial render
     void* cuda_tex_resource;
     unsigned int opengl_tex_cuda;  // OpenGL Texture for cuda result
 
@@ -30,12 +30,7 @@ public:
     int t_width;
     int t_height;
 
-    CudaGLContext(int width, int height);
-    ~CudaGLContext();
-
-private:
-    void initCUDABuffers();
-    void initGLTextureForCUDA();
+    CudaGLContext(void* buffer, int width, int height);
 };
 
 void initWindow();

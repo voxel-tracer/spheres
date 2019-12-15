@@ -12,7 +12,6 @@
 #include <cuda_gl_interop.h>
 //#include "cudautils.h"
 #include "libs/helper_cuda.h"
-#include "libs/helper_cuda_gl.h"
 // C++ libs
 #include "shader_tools/GLSLProgram.h"
 #include "shader_tools/GLSLShader.h"
@@ -93,29 +92,11 @@ void initGLBuffers()
     drawtex_f = GLSLShader("Textured draw fragment shader", glsl_drawtex_fragshader_src, GL_FRAGMENT_SHADER);
     shdrawtex = GLSLProgram(&drawtex_v, &drawtex_f);
     shdrawtex.compile();
-    SDK_CHECK_ERROR_GL();
 }
 
-CudaGLContext::CudaGLContext(int width, int height) :t_width(width), t_height(height) {
-    initCUDABuffers();
-    initGLTextureForCUDA();
-}
+CudaGLContext::CudaGLContext(void* buffer, int width, int height) : render_buffer(buffer), t_width(width), t_height(height) {
+    // Create 2D OpenGL texture in gl_tex and bind it to CUDA in cuda_tex
 
-CudaGLContext::~CudaGLContext() {
-    checkCudaErrors(cudaFree(cuda_dev_render_buffer));
-}
-
-void CudaGLContext::initCUDABuffers() {
-    // set up vertex data parameters
-    int num_texels = t_height * t_width;
-    int num_values = num_texels * 4;
-    size_t size_tex_data = sizeof(GLubyte) * num_values;
-    // We don't want to use cudaMallocManaged here - since we definitely want
-    checkCudaErrors(cudaMalloc(&cuda_dev_render_buffer, size_tex_data)); // Allocate CUDA memory for color output
-}
-
-// Create 2D OpenGL texture in gl_tex and bind it to CUDA in cuda_tex
-void CudaGLContext::initGLTextureForCUDA() {
     // create an OpenGL texture
     glGenTextures(1, &opengl_tex_cuda); // generate 1 texture
     glBindTexture(GL_TEXTURE_2D, opengl_tex_cuda); // set it as current target
@@ -129,7 +110,6 @@ void CudaGLContext::initGLTextureForCUDA() {
     // Register this texture with CUDA
     checkCudaErrors(cudaGraphicsGLRegisterImage(
         (cudaGraphicsResource**)&cuda_tex_resource, opengl_tex_cuda, GL_TEXTURE_2D, cudaGraphicsRegisterFlagsWriteDiscard));
-    SDK_CHECK_ERROR_GL();
 }
 
 // Keyboard
@@ -175,7 +155,6 @@ bool initGL() {
         exit(1);
     }
     glViewport(0, 0, WIDTH, HEIGHT); // viewport for x,y to normalized device coordinates transformation
-    SDK_CHECK_ERROR_GL();
     return true;
 }
 
@@ -207,7 +186,7 @@ void copyCUDAImageToTexture(CudaGLContext* context)
     int num_texels = context->t_width * context->t_height;
     int num_values = num_texels * 4;
     int size_tex_data = sizeof(GLubyte) * num_values;
-    checkCudaErrors(cudaMemcpyToArray(texture_ptr, 0, 0, context->cuda_dev_render_buffer, size_tex_data, cudaMemcpyDeviceToDevice));
+    checkCudaErrors(cudaMemcpyToArray(texture_ptr, 0, 0, context->render_buffer, size_tex_data, cudaMemcpyDeviceToDevice));
     checkCudaErrors(cudaGraphicsUnmapResources(1, (cudaGraphicsResource**)&context->cuda_tex_resource, 0));
 }
 
@@ -266,8 +245,6 @@ void updateWindow(CudaGLContext *context, GuiParams& guiParams, bool& paramsChan
     // render dear imgui into the screen
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-
-    SDK_CHECK_ERROR_GL();
 
     // Swap the screen buffers
     glfwSwapBuffers(window);
