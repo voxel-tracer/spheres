@@ -147,16 +147,16 @@ public:
 
     void resetRenderer() {
         iteration = 0;
-        checkCudaErrors(cudaMemset((void*)next_sample, 0, sizeof(ull)));
         checkCudaErrors(cudaMemset((void*)numsamples_perpixel, 0, numPixels() * sizeof(ull)));
         checkCudaErrors(cudaMemset(color_buffer, 0, numPixels() * sizeof(vec3)));
-        checkCudaErrors(cudaMemset((void*)numActivePaths, 0, sizeof(ull)));
     }
 
     __device__ void reset(int pid, bool first) {
         if (pid == 0) {
             numActivePaths[0] = 0;
             next_path[0] = 0;
+            if (first)
+                next_sample[0] = 0;
         }
         m.reset(pid, first);
     }
