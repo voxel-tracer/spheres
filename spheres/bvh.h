@@ -124,3 +124,27 @@ __device__ float hit_bbox(const bvh_node& node, const ray& r, float t_max) {
 
     return t_min;
 }
+
+__device__ bool hit_unit_box(const vec3 center, const ray& r, float t_min, float t_max, hit_record& rec) {
+    int hit_axis = 0;
+    for (int a = 0; a < 3; a++) {
+        float invD = 1.0f / r.direction()[a];
+        float t0 = (center[a] - 1 - r.origin()[a]) * invD;
+        float t1 = (center[a] + 1 - r.origin()[a]) * invD;
+        if (invD < 0.0f) {
+            float tmp = t0; t0 = t1; t1 = tmp;
+        }
+        if (t0 > t_min) {
+            t_min = t0;
+            hit_axis = a;
+        }
+        t_max = t1 < t_max ? t1 : t_max;
+        if (t_max <= t_min)
+            return false;
+    }
+
+    rec.t = t_min;
+    rec.n = vec3(0, 0, 0);
+    rec.n[hit_axis] = r.direction()[hit_axis] < 0 ? +1 : -1;
+    return true;
+}

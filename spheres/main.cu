@@ -422,7 +422,7 @@ __global__ void trace_scattered(RenderContext context) {
                     float y = tex1Dfetch(t_spheres, m++);
                     float z = tex1Dfetch(t_spheres, m++);
                     vec3 center(x, y, z);
-                    if (hit_point(center, r, 0.001f, closest, rec)) {
+                    if (hit_unit_box(center, r, 0.001f, closest, rec)) {
                         found = true;
                         closest = rec.t;
                         rec.idx = (idx - context.leaf_offset) * context.numPrimitivesPerLeaf + i;
@@ -609,7 +609,7 @@ __global__ void trace_shadows(RenderContext context) {
                     float y = tex1Dfetch(t_spheres, m++);
                     float z = tex1Dfetch(t_spheres, m++);
                     vec3 center(x, y, z);
-                    found = hit_point(center, r, 0.001f, FLT_MAX, rec);
+                    found = hit_unit_box(center, r, 0.001f, FLT_MAX, rec);
                 }
 
                 if (found) // exit traversal once we find an intersection in any leaf
