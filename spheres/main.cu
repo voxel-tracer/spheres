@@ -169,10 +169,8 @@ public:
         return preview ? PREVIEW_HEIGHT : _height;
     }
 
-    __host__ ull getNumActivePaths() const {
-        ull value;
+    __host__ void getNumActivePaths(ull& value) const {
         checkCudaErrors(cudaMemcpy((void*)&value, numActivePaths, sizeof(ull), cudaMemcpyDeviceToHost));
-        return value;
     }
 };
 
@@ -881,7 +879,9 @@ bool renderIteration(const RenderContext& context, const camera& cam, bool light
         checkCudaErrors(cudaGetLastError());
     }
 
-    if (context.getNumActivePaths() < (context.maxActivePaths / 100)) {
+    ull numActivePaths = 0;
+    context.getNumActivePaths(numActivePaths);
+    if (numActivePaths < (context.maxActivePaths / 100)) {
         // not enough paths left to trace, stop the renderer
         return false;
     }
