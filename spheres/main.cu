@@ -422,7 +422,7 @@ __global__ void trace_scattered(RenderContext context) {
                     float y = tex1Dfetch(t_spheres, m++);
                     float z = tex1Dfetch(t_spheres, m++);
                     vec3 center(x, y, z);
-                    if (hit_unit_box(center, r, 0.001f, closest, rec)) {
+                    if (hit_unit_box(center, r, kEpsilon, closest, rec)) {
                         found = true;
                         closest = rec.t;
                         rec.idx = (idx - context.leaf_offset) * context.numPrimitivesPerLeaf + i;
@@ -609,7 +609,7 @@ __global__ void trace_shadows(RenderContext context) {
                     float y = tex1Dfetch(t_spheres, m++);
                     float z = tex1Dfetch(t_spheres, m++);
                     vec3 center(x, y, z);
-                    found = hit_unit_box(center, r, 0.001f, FLT_MAX, rec);
+                    found = hit_unit_box(center, r, kEpsilon, FLT_MAX, rec);
                 }
 
                 if (found) // exit traversal once we find an intersection in any leaf
@@ -856,12 +856,14 @@ void loadColormap(const char* filename) {
 
 int loadScene(const options opt) {
     scene sc;
-    if (!opt.binary) {
+    if (opt.format == CSV) {
         load_from_csv(opt.input, sc, opt.numPrimitivesPerLeaf);
         store_to_binary(strcat(opt.input, ".bin"), sc);
-    }
-    else {
+    } else if (opt.format == BIN) {
         load_from_binary(opt.input, sc);
+    } else {
+        load_elevation(opt.input, sc, opt.numPrimitivesPerLeaf);
+        store_to_binary(strcat(opt.input, ".bin"), sc);
     }
     copySceneToDevice(sc, &d_colors);
     sc.release();
@@ -932,6 +934,7 @@ void render(RenderContext& context, camera& cam, bool verbose) {
     cam.update();
     context.resetRenderer();
 
+    context.maxBounces = guiParams.maxBounces;
     context.lightRadius = guiParams.lightRadius;
     context.lightColor = vec3(guiParams.lightColor[0], guiParams.lightColor[1], guiParams.lightColor[2]) * guiParams.lightIntensity;
     context.skyColor = vec3(guiParams.skyColor[0], guiParams.skyColor[1], guiParams.skyColor[2]) * guiParams.skyIntensity;
@@ -983,6 +986,7 @@ void renderWindow(RenderContext& context, camera& cam, bool verbose) {
             context.lightColor = vec3(guiParams.lightColor[0], guiParams.lightColor[1], guiParams.lightColor[2]) * guiParams.lightIntensity;
             lightEnabled = !r_preview && guiParams.lightIntensity > 0;
             context.skyColor = vec3(guiParams.skyColor[0], guiParams.skyColor[1], guiParams.skyColor[2]) * guiParams.skyIntensity;
+            context.maxBounces = guiParams.maxBounces;
         }
 
         if (render) {

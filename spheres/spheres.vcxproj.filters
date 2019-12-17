@@ -58,6 +58,7 @@
       <Filter>imgui</Filter>
     </ClInclude>
     <ClInclude Include="math_3d.h" />
+    <ClInclude Include="stb_image.h" />
   </ItemGroup>
   <ItemGroup>
     <Filter Include="shader_tools">

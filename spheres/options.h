@@ -2,6 +2,12 @@
 
 #include <iostream>
 
+typedef enum _inputFormat {
+    CSV = 0,
+    BIN,
+    PNG
+} inputFormat;
+
 struct options {
     int nx = 1200;
     int ny = 1200;
@@ -11,7 +17,7 @@ struct options {
     char* colormap = "viridis.csv";
     char* input = NULL;
     bool verbose = false;
-    bool binary = false;
+    inputFormat format = CSV;
     bool window = false;
     int numPrimitivesPerLeaf = 5;
 };
@@ -45,14 +51,19 @@ bool parse_args(int argc, char** argv, options& opt) {
             opt.colormap = argv[++idx];
         else if (!strcmp(arg, "-v"))
             opt.verbose = true;
-        else if (!strcmp(arg, "-b"))
-            opt.binary = true;
+        else if (!strcmp(arg, "-f")) {
+            const char* val = argv[++idx];
+            if (!strcmp(val, "csv")) opt.format = CSV;
+            else if (!strcmp(val, "bin")) opt.format = BIN;
+            else if (!strcmp(val, "png")) opt.format = PNG;
+            else return false;
+        }
         else if (!strcmp(arg, "-w"))
             opt.window = true;
         else if (!strcmp(arg, "-ppl"))
             opt.numPrimitivesPerLeaf = get_argi(argc, argv, ++idx);
         else if (!strcmp(arg, "-h")) {
-            std::cout << "usage: spheres -i <input file> [-b binary false] [-nx width 1200] [-ny height 1200] [-ns spp 10] [-d camera dist 100] [-mp max active paths 1M] [-c colormap viridis.csv] [-ppl primitivesPerLeaf 5] [-w window false] [-v verbose false]" << std::endl;
+            std::cout << "usage: spheres -i <input file> [-f format=png [csv|bin|png]] [-nx width 1200] [-ny height 1200] [-ns spp 10] [-d camera dist 100] [-mp max active paths 1M] [-c colormap viridis.csv] [-ppl primitivesPerLeaf 5] [-w window false] [-v verbose false]" << std::endl;
             return false;
         }
         else {

@@ -108,7 +108,7 @@ bvh_node* build_bvh(sphere* l, unsigned int numPrimitives, int numPrimitivesPerL
 }
 
 __device__ float hit_bbox(const bvh_node& node, const ray& r, float t_max) {
-    float t_min = 0.001f;
+    float t_min = kEpsilon;
     for (int a = 0; a < 3; a++) {
         float invD = 1.0f / r.direction()[a];
         float t0 = (node.min()[a] - 1 - r.origin()[a]) * invD;
@@ -131,7 +131,7 @@ __device__ bool hit_unit_box(const vec3 center, const ray& r, float t_min, float
         float invD = 1.0f / r.direction()[a];
         float t0 = (center[a] - 1 - r.origin()[a]) * invD;
         float t1 = (center[a] + 1 - r.origin()[a]) * invD;
-        if (invD < 0.0f) {
+        if (t1 < t0) {
             float tmp = t0; t0 = t1; t1 = tmp;
         }
         if (t0 > t_min) {
