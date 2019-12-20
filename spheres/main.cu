@@ -108,6 +108,7 @@ public:
 
     int* colors;
 
+    vec3 lightPosition = vec3(2500.0f, 1000.0f, 0.0f);
     float lightRadius;
     vec3 lightColor;
 
@@ -458,7 +459,6 @@ __global__ void trace_scattered(RenderContext context) {
 __global__ void generate_shadow_rays(RenderContext context) {
     paths& p = context.paths;
 
-    const vec3 light_center(5000, 0, 0);
     const float light_radius = context.lightRadius;
     const vec3 light_color = context.lightColor;
 
@@ -483,12 +483,12 @@ __global__ void generate_shadow_rays(RenderContext context) {
 
     // create a random direction towards the light
     // coord system for sampling
-    const vec3 sw = unit_vector(light_center - hit_p);
+    const vec3 sw = unit_vector(context.lightPosition - hit_p);
     const vec3 su = unit_vector(cross(fabs(sw.x()) > 0.01f ? vec3(0, 1, 0) : vec3(1, 0, 0), sw));
     const vec3 sv = cross(sw, su);
 
     // sample sphere by solid angle
-    const float cosAMax = sqrt(1.0f - light_radius * light_radius / (hit_p - light_center).squared_length());
+    const float cosAMax = sqrt(1.0f - light_radius * light_radius / (hit_p - context.lightPosition).squared_length());
     const float eps1 = random_float(state);
     const float eps2 = random_float(state);
     const float cosA = 1.0f - eps1 + eps1 * cosAMax;
