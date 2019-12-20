@@ -120,7 +120,7 @@ void load_elevation(const char* input, scene& sc, int numPrimitivesPerLeaf) {
             const unsigned char minN = eData.minNeighbors(x, y);
             max_e = max(max_e, e);
             for (int z = minN; z <= e;z++)
-                sc.spheres[out++] = sphere(vec3(x + 0.5f - image_x / 2, y + 0.5f - image_y / 2, z + 0.5f), e);
+                sc.spheres[out++] = sphere(vec3(x + 0.5f - image_x / 2, z + 0.5f, y + 0.5f - image_y / 2), e);
         }
     }
 

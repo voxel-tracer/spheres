@@ -20,6 +20,8 @@ struct GuiParams {
     bool bModelColor = false;
     float modelColor[3] = { 1, 1, 1 };
     float modelColorIntensity = 0.5f;
+
+    bool bFixedUp = true;
 };
 
 class CudaGLContext {

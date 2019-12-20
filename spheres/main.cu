@@ -941,6 +941,7 @@ void render(RenderContext& context, camera& cam, bool verbose) {
     cudaProfilerStart();
     bool stop = false;
 
+    cam.fixedUp = guiParams.bFixedUp;
     cam.update();
     context.resetRenderer();
 
@@ -988,6 +989,7 @@ void renderWindow(RenderContext& context, camera& cam, bool verbose) {
     while (!stop && !(context.window && pollWindowEvents())) {
         if (camera_updated || guiChanged || context.preview != r_preview) {
             context.preview = r_preview;
+            cam.fixedUp = guiParams.bFixedUp;
             cam.update();
             context.resetRenderer();
             camera_updated = false;

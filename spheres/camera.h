@@ -38,8 +38,9 @@ public:
         const float xAngleRad = xDelta * kPI / 180;
         const float yAngleRad = yDelta * kPI / 180;
 
-        //xAngleRad rotates around vUp
-        const mat4_t mx = m4_rotation(xAngleRad, v3(vUp[0], vUp[1], vUp[2]));
+        //xAngleRad rotates around up
+        const vec3_t up = fixedUp ? v3(0, 1, 0) : v3(vUp[0], vUp[1], vUp[2]);
+        const mat4_t mx = m4_rotation(xAngleRad, up);
         // yAngleRad rotates around u
         // u is a unit vector that points to the side of the camera
         const mat4_t my = m4_rotation(yAngleRad, v3(u[0], u[1], u[2]));
@@ -74,6 +75,7 @@ public:
     float relative_dist = 1.0f;
     int xDelta = 0;
     int yDelta = 0;
+    bool fixedUp = true;
 private:
     float radial_distance;
     vec3 vUp;

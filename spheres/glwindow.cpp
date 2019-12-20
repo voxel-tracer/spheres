@@ -212,6 +212,8 @@ bool renderImGui(GuiParams& guiParams) {
         changed = true;
     if (ImGui::InputFloat("model color intensity", &guiParams.modelColorIntensity, 0.1f, 10))
         changed = true;
+    if (ImGui::Checkbox("fixed camera up", &guiParams.bFixedUp))
+        changed = true;
 
     ImGui::End();
 
