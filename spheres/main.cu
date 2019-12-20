@@ -1043,8 +1043,8 @@ void renderWindow(RenderContext& context, camera& cam, bool verbose) {
 void mouseMove(int dx, int dy, int mouse_btn) {
     camera_updated = true;
     if (mouse_btn == MOUSE_LEFT) {
-        cam->yDelta = -dx;
-        cam->xDelta = -dy;
+        cam->yDelta = -dy;
+        cam->xDelta = -dx;
         r_preview = true;
     }
     else if (mouse_btn == MOUSE_RIGHT) {
