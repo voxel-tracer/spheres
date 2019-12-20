@@ -206,9 +206,12 @@ bool renderImGui(GuiParams& guiParams) {
         changed = true;
     if (ImGui::InputFloat("sky intensity", &guiParams.skyIntensity, 0.1f, 10))
         changed = true;
-
-    //if (ImGui::InputInt2("camera", guiParams.camera))
-    //    changed = true;
+    if (ImGui::Checkbox("fixed model color", &guiParams.bModelColor))
+        changed = true;
+    if (ImGui::ColorEdit3("model color", guiParams.modelColor))
+        changed = true;
+    if (ImGui::InputFloat("model color intensity", &guiParams.modelColorIntensity, 0.1f, 10))
+        changed = true;
 
     ImGui::End();
 

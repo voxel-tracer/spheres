@@ -115,6 +115,9 @@ public:
 
     const bool window;
 
+    bool bModelColor;
+    vec3 modelColor;
+
     __host__ __device__ unsigned int numPixels() {
         return width() * height();
     }
@@ -693,8 +696,15 @@ __global__ void update(RenderContext context) {
         // update path attenuation
         const int hit_id = p.hit_id[pid];
         int clr_idx = context.colors[hit_id] * 3;
-        const vec3 albedo = vec3(d_colormap[clr_idx++], d_colormap[clr_idx++], d_colormap[clr_idx++]);
-        
+        vec3 albedo;
+        if (context.bModelColor) {
+            albedo = context.modelColor;
+        }
+        else {
+            int clr_idx = context.colors[hit_id] * 3;
+            albedo = vec3(d_colormap[clr_idx++], d_colormap[clr_idx++], d_colormap[clr_idx++]);
+        }
+
         vec3 attenuation = p.attentuation[pid] * albedo;
         p.attentuation[pid] = attenuation;
 
@@ -938,6 +948,8 @@ void render(RenderContext& context, camera& cam, bool verbose) {
     context.lightRadius = guiParams.lightRadius;
     context.lightColor = vec3(guiParams.lightColor[0], guiParams.lightColor[1], guiParams.lightColor[2]) * guiParams.lightIntensity;
     context.skyColor = vec3(guiParams.skyColor[0], guiParams.skyColor[1], guiParams.skyColor[2]) * guiParams.skyIntensity;
+    context.bModelColor = guiParams.bModelColor;
+    context.modelColor = vec3(guiParams.modelColor[0], guiParams.modelColor[1], guiParams.modelColor[2]) * guiParams.modelColorIntensity;
 
     while (renderIteration(context, cam, true)) {
         // print metrics
@@ -987,6 +999,8 @@ void renderWindow(RenderContext& context, camera& cam, bool verbose) {
             lightEnabled = !r_preview && guiParams.lightIntensity > 0;
             context.skyColor = vec3(guiParams.skyColor[0], guiParams.skyColor[1], guiParams.skyColor[2]) * guiParams.skyIntensity;
             context.maxBounces = guiParams.maxBounces;
+            context.bModelColor = guiParams.bModelColor;
+            context.modelColor = vec3(guiParams.modelColor[0], guiParams.modelColor[1], guiParams.modelColor[2]) * guiParams.modelColorIntensity;
         }
 
         if (render) {
