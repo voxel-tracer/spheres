@@ -107,6 +107,7 @@ public:
     int numPrimitivesPerLeaf;
 
     int* colors;
+    vec3* satelliteImage = NULL;
 
     vec3 lightPosition = vec3(2500.0f, 1000.0f, 0.0f);
     float lightRadius;
@@ -138,6 +139,11 @@ public:
         resetRenderer();
     }
 
+    void setSatelliteImage(vec3* image, unsigned int size) {
+        checkCudaErrors(cudaMalloc((void**)&satelliteImage, size * sizeof(vec3)));
+        checkCudaErrors(cudaMemcpy(satelliteImage, image, size * sizeof(vec3), cudaMemcpyHostToDevice));
+    }
+
     void freeDeviceMem() {
         checkCudaErrors(cudaFree(next_sample));
         checkCudaErrors(cudaFree(next_path));
@@ -147,6 +153,9 @@ public:
         checkCudaErrors(cudaFree(numActivePaths));
 
         m.freeDeviceMem();
+
+        if (satelliteImage != NULL)
+            checkCudaErrors(cudaFree(satelliteImage));
     }
 
     void resetRenderer() {
@@ -682,8 +691,7 @@ __global__ void update(RenderContext context) {
         // in preview mode, just use the primitive color
         if (pstate == HIT) {
             const int hit_id = p.hit_id[pid];
-            int clr_idx = context.colors[hit_id] * 3;
-            const vec3 albedo = vec3(d_colormap[clr_idx++], d_colormap[clr_idx++], d_colormap[clr_idx++]);
+            const vec3 albedo = context.satelliteImage[context.colors[hit_id]];
 
             const unsigned int pixel_id = p.pixelId[pid];
             atomicAdd(context.color_buffer[pixel_id].e, albedo.e[0]);
@@ -692,17 +700,18 @@ __global__ void update(RenderContext context) {
         }
         // in preview mode, do not bounce
         p.pstate[pid] = DONE;
-    } else if (pstate == HIT || pstate == HIT_AND_LIGHT) {
+    } 
+    else if (pstate == HIT || pstate == HIT_AND_LIGHT) {
         // update path attenuation
         const int hit_id = p.hit_id[pid];
-        int clr_idx = context.colors[hit_id] * 3;
         vec3 albedo;
         if (context.bModelColor) {
             albedo = context.modelColor;
         }
         else {
-            int clr_idx = context.colors[hit_id] * 3;
-            albedo = vec3(d_colormap[clr_idx++], d_colormap[clr_idx++], d_colormap[clr_idx++]);
+            //int clrIdx = context.colors[hit_id] * 3;
+            //albedo = vec3(d_colormap[clrIdx++], d_colormap[clrIdx++], d_colormap[clrIdx++]);
+            albedo = context.satelliteImage[context.colors[hit_id]];
         }
 
         vec3 attenuation = p.attentuation[pid] * albedo;
@@ -872,7 +881,7 @@ int loadScene(const options opt) {
     } else if (opt.format == BIN) {
         load_from_binary(opt.input, sc);
     } else {
-        load_elevation(opt.input, sc, opt.numPrimitivesPerLeaf);
+        loadMapBoxTerrainRGB(opt.input, sc, opt.numPrimitivesPerLeaf);
         store_to_binary(strcat(opt.input, ".bin"), sc);
     }
     copySceneToDevice(sc, &d_colors);
@@ -1066,11 +1075,20 @@ int main(int argc, char** argv) {
     if (!parse_args(argc, argv, opt))
         return -1;
 
+    if (opt.colormap != NULL)
+        loadColormap(opt.colormap);
 
-    loadColormap(opt.colormap);
     const int bvh_size = loadScene(opt);
     setup_camera(opt.nx, opt.ny, opt.dist);
     RenderContext renderContext(opt.nx, opt.ny, opt.ns, opt.maxActivePaths, bvh_size / 2, opt.numPrimitivesPerLeaf, d_colors, opt.window);
+
+    if (opt.satellite != NULL) {
+        vec3* data;
+        unsigned int size;
+        loadSatelliteImage(opt.satellite, &data, size);
+        renderContext.setSatelliteImage(data, size);
+        delete[] data;
+    }
 
     if (opt.window) {
         initWindow();
